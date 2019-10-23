@@ -4,8 +4,13 @@ import ("fmt"
         "log"
         "net/rpc")
 
+//Avoiding "imported and not used" compiler nonsense. Not to be used anywhere in the code.
+func cancer() {
+    fmt.Println("")
+}
+
 //Client process
-func ClientStart(id int) {
+func ClientStart(id int, quit chan int) {
     
     //Server address is the loopback ip
     serverAddressAndPort := "127.0.0.1:8001"
@@ -18,12 +23,12 @@ func ClientStart(id int) {
     var reply bool
     
     //Performs 1000 calls to server rpc IncA
-    for i:=0; i<1000; i++ {
+    for i:=0; i<3000; i++ {
         err = client.Call("ServerState.IncA", 0, &reply)
         if err != nil {
             log.Fatal("rpc error:", err)
         }
     }
     
-    fmt.Printf("Client %d done.\n", id)
+    quit <- id
 }

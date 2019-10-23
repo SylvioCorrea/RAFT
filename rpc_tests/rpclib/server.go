@@ -5,6 +5,9 @@ import ("net"
         "net/http"
         "log"
         "fmt"
+        "os"
+        "bufio"
+        "sync"
         )
 
 //Server process
@@ -12,7 +15,8 @@ func ServerStart() {
     
     state_ptr := &ServerState{
                 ServerIntA: 0,
-                ServerIntB: 0}
+                ServerIntB: 0,
+                Mutex: sync.Mutex{}}
     
     //Registers rpc function using golang sorcery
     rpc.Register(state_ptr)
@@ -25,8 +29,14 @@ func ServerStart() {
     }
     
     fmt.Println("Server online.")
-    
     //Starts servicing
-    http.Serve(l, nil)
+    go http.Serve(l, nil)
+    fmt.Println("Waiting calls.")
+    //Block forever
+    reader := bufio.NewReader(os.Stdin)
+    for {
+        reader.ReadString('\n')
+        fmt.Printf("ServerState ServerIntA is %d\n", state_ptr.ServerIntA)
+    }
 }
 

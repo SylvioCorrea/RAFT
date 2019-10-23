@@ -2,28 +2,30 @@ package main
 
 import ("./rpclib"
         "sync"
+        "fmt"
         )
+
+//Avoiding "imported and not used" compiler nonsense. Not to be used anywhere in the code.
+func cancer() {
+    var wg sync.WaitGroup
+    wg.Add(10)
+    fmt.Println("")
+}
 
 //Runs a number of clients concurrently and then exits
 func main() {
     
     //Number of clients to be run
-    nOfClients := 20
-    
-    //Barrier that will block main until all client processes are done
-    var wg sync.WaitGroup
-    wg.Add(nOfClients)
+    nOfClients := 30
+    quit := make(chan int)
     
     //Runs nOfClients clients concurrently
     for i:=0; i<nOfClients; i++ {
-        go func(n int) {
-           //Runs a client process
-           rpclib.ClientStart(n)
-           //Signals WaitGroup the go routine is done
-           wg.Done()
-        }(i) //Passing i as argument n, otherwise i could be incremented by the loop before calling ClientStart()
+        go rpclib.ClientStart(i, quit)
     }
     
-    //Waits on nOfClients client processes
-    wg.Wait()
+    for i:=0; i<nOfClients; i++ {
+        n := <-quit
+        fmt.Printf("Client %d done.\n", n)
+    }
 }
