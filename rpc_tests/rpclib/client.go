@@ -22,7 +22,7 @@ func ClientStart(id int, quit chan int) {
     
     var reply bool
     
-    //Performs 1000 calls to server rpc IncA
+    //Performs 3000 calls to server rpc IncA
     for i:=0; i<3000; i++ {
         err = client.Call("ServerState.IncA", 0, &reply)
         if err != nil {
