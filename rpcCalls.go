@@ -10,92 +10,94 @@ type LogEntry struct {
 	Value 		int
 }
 
-// AppendEntry parameters
-type AppendInfo struct {
-	Term         int
-	leaderID     int
-	prevLogIndex int
-	prevLogTerm  int
-	leaderCommit int
-	entries		 make([] LogEntry)
-}
-
 // Processes' state
 type RecvrInfo struct {
-	Term         int
-	candidateID  int
-	lastLogIndex int
-	lastLogTerm  int
-	commitIndex  int
+	// Persistent
+	currentTerm  int
+	votedFor     int
 	log			 make([] LogEntry)
+
+	// Volatile on all
+	commitIndex  int
+	lastApplied  int
+
+	// Volatile on leader
+	nextIndex    make([] int)
+	matchIndex   make([] int)
+}
+
+// AppendEntry parameters
+type AppendInfo struct {
+	term         int
+	leaderId     int
+	prevLogIndex int
+	prevLogTerm  int
+	entries		 make([] LogEntry)
+	leaderCommit int
 }
 
 // RequestVote parameters
 type CandidateInfo struct {
-	Term         int
-	candidateID  int
+	term         int
+	candidateId  int
 	lastLogIndex int
 	lastLogTerm  int
 }
 
 // RPCs response
 type ReplyInfo struct {
-	Term 		 int
-	Reply        int
+	term 		 int
+	reply        int
 }
 
 
 // RPC RequestVote (Args, Reply)
 func (state *RecvrInfo) RequestVote(candidate *CandidateInfo, vote *ReplyInfo) error{
-	if state.candidateID == nil {  // 2. If votedFor is null or candidateId, grant vote
-		vote.Term  = state.Term+1
-		vote.Reply = 1
+	if state.votedFor == nil {  // 2. If votedFor is null or candidateId, grant vote
+		vote.term  = state.currentTerm+1
+		vote.reply = 1
 
-		state.Term 		   = candidate.Term
-		state.candidateID  = candidate.candidateID
-		state.lastLogIndex = candidate.lastLogIndex
-		state.lastLogTerm  = candidate.lastLogTerm
+		state.currentTerm  = candidate.term
+		state.votedFor     = candidate.candidateId
 		return nil
 	}
 
-	if state.Term >= candidate.Term {  // 1. Reply false if term < currentTerm
-		vote.Term = state.Term+1
-		vote.Reply = 0
+	if state.currentTerm >= candidate.term {  // 1. Reply false if term < currentTerm
+		vote.term  = state.currentTerm+1
+		vote.reply = 0
 		return nil
 	}
 
-	if state.lastLogIndex <= candidate.lastLogIndex {  // 2. If candidate's log is at least as up-to-date as receiver's log, grant vote
-		vote.Term = state.Term+1
-		vote.Reply = 1
+	if len(state.log) <= candidate.lastLogIndex {  // 2. If candidate's log is at least as up-to-date as receiver's log, grant vote
+		vote.term  = state.currentTerm+1
+		vote.reply = 1
 
-		state.Term 		   = candidate.Term
-		state.candidateID  = candidate.candidateID
-		state.lastLogIndex = candidate.lastLogIndex
-		state.lastLogTerm  = candidate.lastLogTerm
+		state.currentTerm  = candidate.term
+		state.votedFor     = candidate.candidateId
 		return nil
 	}
 
-	vote.Term = state.Term+1
-	vote.Reply = 0
+	vote.term  = state.currentTerm+1
+	vote.reply = 0
 	return nil
 }
 
 // RPC AppendEntry (Args, Reply)
 func (state *RecvrInfo) AppendEntry(entry *AppendInfo, rep *Reply) error{
-	if entry.Term < state.Term {  // 1.  Reply false if term < currentTerm
-		rep.Term  = state.Term
-		rep.Reply = 0
+	if entry.term < state.currentTerm {  // 1.  Reply false if term < currentTerm
+		rep.term  = state.currentTerm
+		rep.reply = 0
 		return nil
 	}
 
-	if state.lastLogIndex < entry.prevLogIndex || // 2.  Reply false if log doesn’t contain an entry at prevLogIndex
-		state.log[entry.prevLogIndex].Term != entry.prevLogTerm{ // whose term matches prevLogTerm
-		rep.Term  = state.Term
-		rep.Reply = 0
+	if len(state.log) < entry.prevLogIndex || // 2.  Reply false if log doesn’t contain an entry at prevLogIndex
+		state.log[entry.prevLogIndex].Term != entry.prevLogTerm { // whose term matches prevLogTerm
+		rep.term  = state.currentTerm
+		rep.reply = 0
 		return nil
 	}
 
-	if state.log[entry.prevLogIndex+1].Term != entry.prevLogTerm{ // 3. If an existing entry conflicts with a new one (same index
+	if state.log[entry.prevLogIndex+1].Term != entry.prevLogTerm { // 3. If an existing entry conflicts with a new one (same index
 														// but different terms), delete the existing entry and all that follow it
 		// TODO
 	}
