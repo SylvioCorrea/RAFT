@@ -1,8 +1,10 @@
-package server
+package RPC
 
 
 import "errors"
-
+import "time"
+import "math/rand"
+import . "../Timer"
 
 // Log Entry (appended $VALUE at $TERM)
 type LogEntry struct {
@@ -24,7 +26,29 @@ type RecvrInfo struct {
 	// Volatile on leader
 	nextIndex    make([] int)
 	matchIndex   make([] int)
+
+	// Aux
+	timer		 time.Timer
+	curState 	 int
+	/*
+		curState :
+			- 0 == Follower
+			- 1 == Candidate
+			- 2 == Leader
+	*/
 }
+
+/*
+	State init::
+	currentTerm <- 0
+	votedFor    <- nil
+	commitIndex <- 0
+	lastApplied <- 0
+
+	timer 		<- NewTimer(2*RANGE*TIMESCALE)
+	curState 	<- 0
+*/
+
 
 // AppendEntry parameters
 type AppendInfo struct {
@@ -90,6 +114,10 @@ func (state *RecvrInfo) AppendEntry(entry *AppendInfo, rep *Reply) error{
 		return nil
 	}
 
+	if !state.timer.Stop(){
+		return nil
+	}
+
 	if len(state.log) < entry.prevLogIndex || // 2.  Reply false if log doesn’t contain an entry at prevLogIndex
 		state.log[entry.prevLogIndex].Term != entry.prevLogTerm { // whose term matches prevLogTerm
 		rep.term  = state.currentTerm
@@ -108,10 +136,14 @@ func (state *RecvrInfo) AppendEntry(entry *AppendInfo, rep *Reply) error{
 	if entry.leaderCommit > state.commitIndex {
 		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 		if entry.leaderCommit > len(state.log){
-			commitIndex = len(state.log)
+			state.commitIndex = len(state.log)
 		}
 		else{
-			commitIndex = entry.leaderCommit
+			state.commitIndex = entry.leaderCommit
 		}
 	}
+
+	remaining := <- state.timer.C
+	remaining.Add(GenRandom())
+	state.timer.Reset(remaining)
 }
