@@ -13,7 +13,7 @@ type LogEntry struct {
 }
 
 // Processes' state
-type RecvrInfo struct {
+type ServerState struct {
 	// Persistent
 	currentterm  int
 	votedFor     int
@@ -76,44 +76,36 @@ type ReplyInfo struct {
 
 
 // RPC RequestVote (Args, Reply)
-func (state *RecvrInfo) RequestVote(candidate *RequestVoteArgs, vote *ReplyInfo) error{
+func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *ReplyInfo) error{
 	// add semaphore
+	vote.term  = state.currentterm
+	vote.reply = false
+
 	if state.votedFor == nil {  // 2. If votedFor is null or candidateId, grant vote
 		state.votedFor     = candidate.candidateId
 		state.currentterm  = candidate.term
 
-		vote.term  = state.currentterm+1
 		vote.reply = true
-		return nil
 	}
 
-	if candidate.term < state.currentterm {  // 1. Reply false if term < currentterm
-		vote.term  = state.currentterm+1
+	else if candidate.term < state.currentterm {  // 1. Reply false if term < currentterm
 		vote.reply = false
-		return nil
 	}
 
-	if len(state.log) <= candidate.lastLogIndex {  // 2. If candidate's log is at least as up-to-date as receiver's log, grant vote
-		vote.term  = state.currentterm+1
+	else if len(state.log) <= candidate.lastLogIndex+1 {  
+		// 2. If candidate's log is at least as up-to-date as receiver's log, grant vote
 		vote.reply = true
 
 		state.currentterm  = candidate.term
 		state.votedFor     = candidate.candidateId
-		return nil
 	}
 	// end semaphore
 
-	vote.term  = state.currentterm+1
-	vote.reply = false
 	return nil
 }
 
 // RPC AppendEntry (Args, Reply)
-func (state *RecvrInfo) AppendEntry(args *AppendEntriesArgs, rep *Reply) error{
-	if !state.timer.Stop(){
-		return nil
-	}
-
+func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *Reply) error{
 	rep.term  = state.currentterm
 	rep.reply = false
 
@@ -121,34 +113,41 @@ func (state *RecvrInfo) AppendEntry(args *AppendEntriesArgs, rep *Reply) error{
 		return nil // restart timer
 	}
 
+	if !state.timer.Stop(){
+		return nil
+	}
+
 	if len(state.log) < args.prevLogIndex || // 2.  Reply false if log doesn’t contain an entry at prevLogIndex
 			state.log[args.prevLogIndex].term != args.prevLogterm { // whose term matches prevLogterm
-		return nil // restart timer
+		// return nil // restart timer
 	}
+	else{
+		// if state.log[args.prevLogIndex].term == args.prevLogterm { 
+			// 3. If an existing entry conflicts with a new one (same index but different terms)
+			state.log = state.log[:args.prevLogIndex+1] // delete the existing entry and all that follow it
+		// }
 
-	// if state.log[args.prevLogIndex].term == args.prevLogterm { // 3. If an existing entry conflicts with a new one (same index
-	// 													// but different terms)
-		state.log = state.log[:args.prevLogIndex+1] // delete the existing entry and all that follow it
-	// }
-
-	// 4. Append any new entries not already in the log
-	for _, entry := range args.entries {
-		state.log = append(state.log, entry)
-	}
-
-	if args.leaderCommit > state.commitIndex {
-		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-		if args.leaderCommit > len(state.log){
-			state.commitIndex = len(state.log)
+		// 4. Append any new entries not already in the log
+		for _, entry := range args.entries {
+			state.log = append(state.log, entry)
 		}
-		else{
-			state.commitIndex = args.leaderCommit
+
+		if args.leaderCommit > state.commitIndex {
+			// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+			if args.leaderCommit > len(state.log){
+				state.commitIndex = len(state.log)
+			}
+			else{
+				state.commitIndex = args.leaderCommit
+			}
 		}
+	
+		state.curState = 0 // When receiving AppendEntries -> convert to follower
+		rep.reply = true
 	}
 
 	remaining := <- state.timer.C
 	remaining.Add(GenRandom())
 	state.timer.Reset(remaining)
 
-	rep.reply = true
 }
