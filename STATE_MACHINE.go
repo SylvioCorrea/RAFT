@@ -9,14 +9,15 @@ func (state *ServerState) transitions() error {
 	elected     := make(chan int)
 	candidature := make(chan int)
 
-	state.timer = NewTimer(0)
+
+	electionTimer = NewTimer(0)
 
 	following <- 1
 
 	for {
 		select{
 			case <- following: // As follower
-				state.timer.Reset(genRandom())
+				// state.timer.Reset(genRandom())
 
 				<- state.timer.C   // Timer expired
 
@@ -24,19 +25,52 @@ func (state *ServerState) transitions() error {
 				candidate <- 1
 
 			case <- candidature: // As candidate
-				state.timer.Reset(genRandom())
-				for {
+				finished := false
+				
+				for !finished {
+					electionTimer.Reset(genRandom())
+
+					if state.timer.Stop(){ // A new leader has already been elected
+						remainingTime := <- state.timer.C
+						state.timer.Reset(remainingTime)
+						following <- 1
+						break
+					}
+
+					exit := make(chan int, len(servers))
+					done := make(chan int)
+					
 					rcvdVotes := 1
 
 					for each other server {
-						go sendVotes()
+						go state.sendVotes(done, exit)
 					}
 
-					// Send ReqstVote
-					if (rcvdVotes > majority){
-						elected <- 1
+					cont := true
+
+					for rcvdVotes < majority && cont{
+						select{
+							case <- electionTimer.C:
+								for i := 0; i < len(server); i++ {
+									exit <- 1
+								}
+								cont = false
+
+							case <- done:
+								rcvdVotes++
+						}
+					}
+
+					if rcvdVotes >= majority{
+						finished = true
 					}
 				}
+
+				if finished{
+					elected <- 1
+				}
+
+
 			case <- elected: // As leader
 			
 				for{ // Start leader procedure
@@ -48,12 +82,23 @@ func (state *ServerState) transitions() error {
 }
 
 
-func sendVotes() {
-	send = client.Vote()
+func (state *ServerState) sendVotes(done chan int, exit chan int) {
+	voteInfo = ReplyInfo{state.term, false}
+	args = RequestVoteArgs{
+		state.term   ,
+		state.myID   ,
+		lastLogIndex ,
+		lastLogterm 
+	}
+
+	send = client.RequestVote()
 	select {
 		case <- send.Done:
-			rcvdVotes += 1 
-		case <- state.timer.C:
+			if voteInfo.reply{
+				done <- 1
+			}
+
+		case <- exit:
 			return
 	}	
 }
