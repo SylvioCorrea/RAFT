@@ -5,14 +5,15 @@ import . "./Timer"
 import "time"
 
 func (state *ServerState) transitions() error {
-	following   := make(chan int)
-	elected     := make(chan int)
-	candidature := make(chan int)
-
+	following   := make(chan int, 1)
+	elected     := make(chan int, 1)
+	candidature := make(chan int, 1)
+	max_term    := make(chan int, 1)
 
 	electionTimer = NewTimer(0)
 
 	following <- 1
+	max_term  <- 1
 
 	for {
 		select{
@@ -38,7 +39,7 @@ func (state *ServerState) transitions() error {
 					}
 
 					exit := make(chan int, len(servers))
-					done := make(chan int)
+					done := make(chan int, len(servers))
 					
 					rcvdVotes := 1
 
@@ -47,16 +48,21 @@ func (state *ServerState) transitions() error {
 					}
 
 					cont := true
+					tmpTerm := <- max_term
+					if tmpTerm > state.currentterm { 
+						state.currentterm = tmpTerm
+					}
+					max_term <- state.currentterm
 
 					for rcvdVotes < majority && cont{
 						select{
-							case <- electionTimer.C:
+							case <- electionTimer.C:case tmp:= <- done
 								for i := 0; i < len(server); i++ {
 									exit <- 1
 								}
 								cont = false
 
-							case <- done:
+							case tmp:= <- done:
 								rcvdVotes++
 						}
 					}
@@ -75,6 +81,10 @@ func (state *ServerState) transitions() error {
 			
 				for{ // Start leader procedure
 					// Send Append
+					tmp := <- max_term
+					if state.currentterm < tmp {
+
+					}
 					
 				}
 		}
@@ -82,7 +92,7 @@ func (state *ServerState) transitions() error {
 }
 
 
-func (state *ServerState) sendVotes(done chan int, exit chan int) {
+func (state *ServerState) sendVotes(done chan int, exit chan int, term chan int) {
 	voteInfo = ReplyInfo{state.term, false}
 	args = RequestVoteArgs{
 		state.term   ,
@@ -97,6 +107,12 @@ func (state *ServerState) sendVotes(done chan int, exit chan int) {
 			if voteInfo.reply{
 				done <- 1
 			}
+
+			cur  := <- term 
+			if cur < voteInfo.term{
+				cur = voteInfo.term
+			}
+			term <- cur
 
 		case <- exit:
 			return
