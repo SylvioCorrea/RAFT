@@ -14,10 +14,18 @@ func (state *ServerState) transitions() error {
 
 	following <- 1
 	max_term  <- 1
-
+    
+    
 	for {
 		select{
-			case <- following: // As follower
+			
+			
+			
+			
+			//========================================
+			// Follower routine
+			//========================================
+			case <- following:
 				// state.timer.Reset(genRandom())
 
 				<- state.timer.C   // Timer expired
@@ -25,7 +33,13 @@ func (state *ServerState) transitions() error {
 				state.curState = 1 // Convert to candidate
 				candidate <- 1
 
-			case <- candidature: // As candidate
+			
+			
+			
+			//========================================
+			// Cadidate routine
+			//========================================
+			case <- candidature:
 				finished := false
 				
 				for !finished {
@@ -77,6 +91,12 @@ func (state *ServerState) transitions() error {
 				}
 
 
+			
+			
+			
+			//========================================
+			// Leader routine
+			//========================================
 			case <- elected: // As leader
 			
 				for{ // Start leader procedure
