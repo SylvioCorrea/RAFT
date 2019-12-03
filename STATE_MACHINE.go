@@ -14,8 +14,7 @@ func (state *ServerState) transitions() error {
 
 	following <- 1
 	max_term  <- 1
-    
-    
+
 	for {
 		select{
 			
@@ -45,12 +44,15 @@ func (state *ServerState) transitions() error {
 				for !finished {
 					electionTimer.Reset(genRandom())
 
+					<- state.sema
 					if state.timer.Stop(){ // A new leader has already been elected
 						remainingTime := <- state.timer.C
 						state.timer.Reset(remainingTime)
 						following <- 1
+						state.sema <- 1
 						break
 					}
+					state.sema <- 1
 
 					exit := make(chan int, len(servers))
 					done := make(chan int, len(servers))
@@ -58,7 +60,7 @@ func (state *ServerState) transitions() error {
 					rcvdVotes := 1
 
 					for each other server {
-						go state.sendVotes(done, exit)
+						go state.sendVotes(done, exit, max_term)
 					}
 
 					cont := true
@@ -97,20 +99,49 @@ func (state *ServerState) transitions() error {
 			//========================================
 			// Leader routine
 			//========================================
-			case <- elected: // As leader
+			/* IMPORTANTE:
+			   
+			   Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;
+			   repeat during idle periods toprevent election timeouts (§5.2)
+			   
+			   O lider manda o AppendEntry inicial vazio para saber, para cada outro servidor,
+			   seu prevLogindex
+			*/
 			
+			case <- elected: // As leader
+				leader_timer := NewTimer(0)
 				for{ // Start leader procedure
-					// Send Append
-					tmp := <- max_term
-					if state.currentterm < tmp {
+					<- leader_timer.C
 
+					<- state.sema
+					if state.timer.Stop(){ // A new leader has already been elected
+						remainingTime := <- state.timer.C
+						state.timer.Reset(remainingTime)
+						following <- 1
+						state.sema <- 1
+						break
 					}
+					state.sema <- 1
+
+					
+					for each other server {
+						manda appendentries
+					}
+
+
+					leader_timer.Reset(Timer.LeaderTimer())
 					
 				}
 		}
 	}
 }
 
+
+func (state *ServerState) sendAppend(done chan int, exit chan int, term chan int) {
+	voteInfo = ReplyInfo{state.term, false}
+
+	send = client.AppendEntries()
+}
 
 func (state *ServerState) sendVotes(done chan int, exit chan int, term chan int) {
 	voteInfo = ReplyInfo{state.term, false}
@@ -121,7 +152,7 @@ func (state *ServerState) sendVotes(done chan int, exit chan int, term chan int)
 		lastLogterm 
 	}
 
-	send = client.RequestVote()
+	send = client.Go("state.RequestVote", args, voteInfo)
 	select {
 		case <- send.Done:
 			if voteInfo.reply{

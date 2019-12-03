@@ -2,10 +2,16 @@ package Timer
 
 import "time"
 
-var RANGE     = 100
-var TIMESCALE = time.Second
+var MIN       = 2*1000
+var RANGE     = 1*1000
+var TIMESCALE = time.Milisecond
 
 
 func GenRandom() time.Duration {
-	return rand.Intn(RANGE) * TIMESCALE
+	return (MIN + rand.Intn(RANGE)) * TIMESCALE
+}
+
+
+func LeaderTimer() time.Duration {
+	return (MIN/2) * TIMESCALE
 }

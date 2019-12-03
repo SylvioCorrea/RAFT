@@ -30,6 +30,7 @@ type ServerState struct {
 	// Aux
 	timer		 time.Timer
 	curState 	 int
+	sema 		 make(chan int, 1)
 	/*
 		curState :
 			- 0 == Follower
@@ -78,6 +79,7 @@ type ReplyInfo struct {
 // RPC RequestVote (Args, Reply)
 func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *ReplyInfo) error{
 	// add semaphore
+	<- state.sema
 	vote.term  = state.currentterm
 	vote.reply = false
 
@@ -100,20 +102,24 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *ReplyInf
 		state.votedFor     = candidate.candidateId
 	}
 	// end semaphore
+	state.sema <- 1
 
 	return nil
 }
 
 // RPC AppendEntry (Args, Reply)
 func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *Reply) error{
+	<- state.sema
 	rep.term  = state.currentterm
 	rep.reply = false
 
 	if args.term < state.currentterm {  // 1.  Reply false if term < currentterm
+		state.sema <- 1
 		return nil // restart timer
 	}
 
 	if !state.timer.Stop(){
+		state.sema <- 1
 		return nil
 	}
 
@@ -150,4 +156,5 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *Reply) error
 	remaining.Add(GenRandom())
 	state.timer.Reset(remaining)
 
+	state.sema <- 1
 }
