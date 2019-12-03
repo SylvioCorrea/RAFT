@@ -1,8 +1,10 @@
 package STATE_MACHINE
 
-import . "./RPC"
-import . "./Timer"
-import "time"
+import (
+		. "./RPC"
+		. "./Timer"
+		"time"
+		)
 
 func (state *ServerState) transitions() error {
 	following   := make(chan int, 1)
@@ -29,7 +31,7 @@ func (state *ServerState) transitions() error {
 
 				<- state.timer.C   // Timer expired
 
-				state.curState = 1 // Convert to candidate
+				state.curState = CANDIDATE // Convert to candidate
 				candidate <- 1
 
 			
@@ -44,15 +46,15 @@ func (state *ServerState) transitions() error {
 				for !finished {
 					electionTimer.Reset(genRandom())
 
-					<- state.sema
+					state.mux.Lock()
 					if state.timer.Stop(){ // A new leader has already been elected
 						remainingTime := <- state.timer.C
 						state.timer.Reset(remainingTime)
 						following <- 1
-						state.sema <- 1
+						state.mux.Unlock()
 						break
 					}
-					state.sema <- 1
+					state.mux.Unlock()
 
 					exit := make(chan int, len(servers))
 					done := make(chan int, len(servers))
@@ -113,15 +115,15 @@ func (state *ServerState) transitions() error {
 				for{ // Start leader procedure
 					<- leader_timer.C
 
-					<- state.sema
+					state.mux.Lock()
 					if state.timer.Stop(){ // A new leader has already been elected
 						remainingTime := <- state.timer.C
 						state.timer.Reset(remainingTime)
 						following <- 1
-						state.sema <- 1
+						state.mux.Unlock()
 						break
 					}
-					state.sema <- 1
+					state.mux.Unlock()
 
 					
 					for each other server {

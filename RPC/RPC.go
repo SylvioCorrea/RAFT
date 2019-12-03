@@ -7,6 +7,13 @@ import (
 	"../Timer"
 )
 
+//State enum
+const (
+	LEADER = iota
+	FOLLOWER
+	CANDIDATE
+)
+
 // Log Entry (appended $VALUE at $TERM)
 type LogEntry struct {
 	term  int
@@ -92,17 +99,22 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestV
 	if candidate.term < state.currentterm {
 		vote.voteGranted = false
 
-		// 2. If votedFor is null or candidateId and candidate is up to date, grant vote
+		// 2. If votedFor is null or candidateId, and candidate is up to date, grant vote
 	} else if (state.votedFor == -1 || state.votedFor == candidate.candidateId) && isUpToDate(state, candidate) {
 		state.votedFor = candidate.candidateId
 		state.currentterm = candidate.term
 		vote.voteGranted = true
 	}
+	//A rpc descrita no artigo não trata o caso em que um CANDIDATO que já votou em si recebe
+	//RequestVote de outro candidato de TERMO MAIOR (caso comum que ocorre quando uma votação
+	//termina sem lider e algum candidato é o primeiro a dar timeout e aumentar seu termo).
+	//Se isso acontece, um candidato, mesmo já tendo votado em si, deve atualizar seu termo e
+	//dar o voto para o candidato de maior termo que o pediu, desde que este esteja up-to-date.
 
 	return nil
 }
 
-//Returns true if candidate requesting vote is at least as "up to date" as this server according to protocol specification.
+//Returns true if candidate requesting vote is at least as "up-to-date" as this server
 /* From paper:
    Raft determines which of two logs is more up-to-date
    by comparing the index and term of the last entries in the
@@ -124,7 +136,7 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 	rep.success = false
 
 	if args.term < state.currentterm { // 1.  Reply false if term < currentterm
-		return nil // restart timer
+		return nil
 	}
 
 	if !state.timer.Stop() {
@@ -154,7 +166,7 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 			}
 		}
 
-		state.curState = 0 // When receiving AppendEntries -> convert to follower
+		state.curState = FOLLOWER // When receiving AppendEntries -> convert to follower
 		rep.success = true
 	}
 
