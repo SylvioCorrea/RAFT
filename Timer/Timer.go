@@ -1,17 +1,18 @@
 package Timer
 
-import "time"
+import (
+	"math/rand"
+	"time"
+)
 
-var MIN       = 2*1000
-var RANGE     = 1*1000
-var TIMESCALE = time.Milisecond
-
+var MIN = 2 * 1000
+var RANGE = 1 * 1000
+var TIMESCALE = time.Millisecond
 
 func GenRandom() time.Duration {
-	return (MIN + rand.Intn(RANGE)) * TIMESCALE
+	return time.Duration(MIN+rand.Intn(RANGE)) * time.Second
 }
 
-
 func LeaderTimer() time.Duration {
-	return (MIN/2) * TIMESCALE
+	return time.Duration(MIN/2) * TIMESCALE
 }
