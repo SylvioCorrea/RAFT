@@ -88,24 +88,31 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestV
 	vote.term = state.currentterm
 	vote.voteGranted = false
 
-	if candidate.term < state.currentterm { // 1. Reply false if term < currentterm
+	// 1. Reply false if term < currentterm
+	if candidate.term < state.currentterm {
 		vote.voteGranted = false
 
-	} else if state.votedFor == -1 || state.votedFor == candidate.candidateId { // 2. If votedFor is null or candidateId, grant vote
+		// 2. If votedFor is null or candidateId and candidate is up to date, grant vote
+	} else if (state.votedFor == -1 || state.votedFor == candidate.candidateId) && isUpToDate(state, candidate) {
 		state.votedFor = candidate.candidateId
 		state.currentterm = candidate.term
-
 		vote.voteGranted = true
-
-	} else if len(state.log) <= candidate.lastLogIndex+1 {
-		// 2. If candidate's log is at least as up-to-date as receiver's log, grant vote
-		vote.voteGranted = true
-
-		state.currentterm = candidate.term
-		state.votedFor = candidate.candidateId
 	}
 
 	return nil
+}
+
+//Returns true if candidate requesting vote is at least as "up to date" as this server according to protocol specification.
+/* From paper:
+   Raft determines which of two logs is more up-to-date
+   by comparing the index and term of the last entries in the
+   logs. If the logs have last entries with different terms, then
+   the log with the later term is more up-to-date. If the logs
+   end with the same term, then whichever log is longer is
+   more up-to-date. */
+func isUpToDate(state *ServerState, candidate *RequestVoteArgs) bool {
+	return state.log[len(state.log)-1].term <= candidate.lastLogterm &&
+		len(state.log)-1 <= candidate.lastLogIndex
 }
 
 // RPC AppendEntry (Args, Reply)

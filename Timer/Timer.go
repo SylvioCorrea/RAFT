@@ -10,7 +10,7 @@ var RANGE = 1 * 1000
 var TIMESCALE = time.Millisecond
 
 func GenRandom() time.Duration {
-	return time.Duration(MIN+rand.Intn(RANGE)) * time.Second
+	return time.Duration(MIN+rand.Intn(RANGE)) * TIMESCALE
 }
 
 func LeaderTimer() time.Duration {
