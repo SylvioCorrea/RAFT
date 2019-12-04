@@ -113,28 +113,28 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 					state.matchIndex[i] = 0
                 }
 				
-				//Channel to abort rpc call threads
-				abortChan := make(chan int, len(clientConnections)-1)
-				//Channel to pass rpc replies
-				replyChan := make(chan int, len(clientConnections)-1)
-
+				
 				//Send initial empty AppendEntries for everyone
 				for i, clientConn := range(clientConnections) { //TODO: lock mux before?
 					if i != state.id { // TODO:  Should the server send AppendEntries to itself?
-						ae := &AppendEntriesArgs {
+						aeArgs := &AppendEntriesArgs {
 							term: 			state.term,
 							leaderId: 		state.id,
 							prevLogindex: 	nextIndex[server.myID] - 1,
 							prevLogTerm: 	state.log[ nextIndex[server.myID] - 1 ].term,
 							entries: 		make([]LogEntry, 0), //First AppendEntries is always empty
 							leaderCommit: 	state.commitIndex }
-						
-						go state.sendAppend(clientConn, ae)
+							
+							go state.sendAppend(clientConn, aeArgs)
+						}
 					}
 				}
-				leader_timer.Reset(LeaderTimer())
 				remainingCalls := nOfServers - 1 //Ongoing calls
-				replyChan := make(chan *AppendEntriesResult) //Receive replies from rpcs in this buffered channel
+				//Channel to abort rpc call threads
+				abortChan := make(chan int, len(clientConnections)-1)
+				//Channel to pass rpc replies
+				replyChan := make(chan *AppendEntriesResult) //Receive replies from rpcs ONE AT A TIME extra carefully
+				leader_timer.Reset(LeaderTimer())
 				
 				
 				for state.curState == LEADER { //Start leader loop
@@ -165,14 +165,14 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 }
 
 //Asynchronous call to AppendEntries RPC
-func (state *ServerState) sendAppend(server *Client, ae *AppendEntriesArgs,
-									 replyChan chan *AppendEntriesResult, abortChan chan int) {
+func (state *ServerState) sendAppend(server *Client, aeArgs *AppendEntriesArgs, replyChan chan *AppendEntriesResult, abortChan chan int) {
 	
-	send = server.Go("ServerState.AppendEntry", args, voteInfo) // TODO: correct the call parameters
+	rpcCall = server.Go("ServerState.AppendEntry", aeArgs, voteInfo) // TODO: correct the call parameters
 	select {
-	case replyChan <- send.Done:
+	case replyChan <- rpcCall.Done:
+		//process reply at leader's main loop
 	case <- abortChan:
-		//abort received
+		//abort call
 	}
 
 }

@@ -1,14 +1,20 @@
 package RPC
 
 import (
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
 	"sync"
 	"time"
-	"net"
-	"net/rpc"
-	"net/http"
+
 	"../Timer"
 )
 
+//==============================================================================
+// Global values known to every server
+//==============================================================================
 //State enum
 const (
 	LEADER = iota
@@ -21,9 +27,15 @@ const (
 var serverPorts = []string{
 	":8000",
 	":8001",
-	":8002"
-}
+	":8002"}
 
+var nOfServers int = len(serverPorts)
+
+//==============================================================================
+
+//==============================================================================
+// Server Structs
+//==============================================================================
 // Log Entry (appended $VALUE at $TERM)
 type LogEntry struct {
 	term  int
@@ -33,10 +45,13 @@ type LogEntry struct {
 // Processes' state
 type ServerState struct {
 	//Extras (not in figure 2)
-	id int
+	id       int
+	timer    *time.Timer
+	curState int
+	mux      sync.Mutex
 
 	// Persistent
-	currentterm int
+	currentTerm int
 	votedFor    int //Should start as -1 since int cannot be nil
 	log         []LogEntry
 
@@ -47,65 +62,81 @@ type ServerState struct {
 	// Volatile on leader
 	nextIndex  []int
 	matchIndex []int
+}
 
-	// Aux
-	timer    time.Timer
-	curState int
-	mux      sync.Mutex
+//==============================================================================
+
+//==============================================================================
+// Setup functions for ServerState objects
+//==============================================================================
+//Convenience for building ServerState object
+func ServerStateInit(id int) *ServerState {
+
+	server := &ServerState{
+		id:          id,
+		timer:       time.NewTimer(0),
+		curState:    FOLLOWER,
+		mux:         sync.Mutex{},
+		currentTerm: 0,
+		votedFor:    -1, //nil
+		log:         make([]LogEntry, 1),
+		commitIndex: 0,
+		lastApplied: 0,
+		nextIndex:   make([]int, nOfServers),
+		matchIndex:  make([]int, nOfServers)}
+
+	//Timers should be emptied before resets. Even timers initialized with zero aren't empty
+	<-server.timer.C
+
+	//To avoid unnecessary headache, all servers start with one identical base log entry
+	baseLogEntry := LogEntry{term: 0, value: 0}
+	server.log[1] = baseLogEntry
+	return server
 }
 
 //Register and run rpc server
 func (state *ServerState) SetupRPCServer() {
 	rpc.Register(state)
-    
-    rpc.HandleHTTP()
-    port := serverPorts[state.id]
-    l, e := net.Listen("tcp", port)
-    if e != nil {
-        log.Fatal("listen error:", e)
-    }
-    
-    fmt.Println("Server online.")
-    //Starts servicing
-    go http.Serve(l, nil)
-    fmt.Println("Waiting calls.")
+
+	rpc.HandleHTTP()
+	port := serverPorts[state.id]
+	l, e := net.Listen("tcp", port)
+	if e != nil {
+		log.Fatal("listen error:", e)
+	}
+
+	fmt.Println("Server online.")
+	//Starts servicing
+	go http.Serve(l, nil)
+	fmt.Println("Waiting calls.")
 }
 
 //Setup all rpc client connections and return them in a slice of pointers
 func (state *ServerState) SetupRPCClients() []*rpc.Client {
 	clientConnections := make([]*rpc.Client, len(serverPorts))
-	
-	for i:=0; i<len(clients); i++ {
-		serverAddress
-		client, err := rpc.DialHTTP("tcp", "127.0.0.1" + serverPorts[i])
-		
+
+	for i := 0; i < len(clientConnections); i++ {
+		client, err := rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[i])
+
 		for err != nil { //If dial failed, try again until it succeeds. All servers are expected work on start
 			log.Fatal("dialing:", err)
 			log.Fatal("Trying again.")
-			client, err = rpc.DialHTTP("tcp", "127.0.0.1" + serverPorts[i])
+			client, err = rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[i])
 		}
-		
+
 		clientConnections[i] = client //store client on slice
 	}
 
 	return clientConnections
 }
 
-/*
-	State init::
-	currentterm <- 0
-	votedFor    <- nil
-	commitIndex <- 0
-	lastApplied <- 0
-
-	timer 		<- NewTimer(2*RANGE*TIMESCALE)
-	curState 	<- 0
-*/
-
+//==============================================================================
+// Structs for RPCs
+//==============================================================================
 // AppendEntry parameters
 type AppendEntriesArgs struct {
 	term         int
-	leaderId     int
+	leaderID     int
 	prevLogIndex int
 	prevLogTerm  int
 	entries      []LogEntry
@@ -115,7 +146,7 @@ type AppendEntriesArgs struct {
 // RequestVote parameters
 type RequestVoteArgs struct {
 	term         int
-	candidateId  int
+	candidateID  int
 	lastLogIndex int
 	lastLogterm  int
 }
@@ -131,26 +162,32 @@ type RequestVoteResult struct {
 	voteGranted bool
 }
 
+//==============================================================================
+
+//==============================================================================
+// RPC functions
+//==============================================================================
+
 // RPC RequestVote (Args, Reply)
 func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestVoteResult) error {
 	state.mux.Lock()
 	defer state.mux.Unlock() //Will be called once function returns
 
-	vote.term = state.currentterm
+	vote.term = state.currentTerm
 	vote.voteGranted = false
 
-	// 1. Reply false if term < currentterm
-	if candidate.term < state.currentterm {
+	// 1. Reply false if term < currentTerm
+	if candidate.term < state.currentTerm {
 		vote.voteGranted = false
 
-		// 2. If votedFor is null or candidateId, and candidate is up to date, grant vote
+		// 2. If votedFor is null or candidateID, and candidate is up to date, grant vote
 	} else if isUpToDate(state, candidate) {
-        if (state.votedFor == -1 || state.votedFor == candidate.candidateId)
-            || candidate.term > state.currentterm {
-		    state.votedFor = candidate.candidateId
-		    state.currentterm = candidate.term
-		    vote.voteGranted = true
-        }
+		if (state.votedFor == -1 || state.votedFor == candidate.candidateID) ||
+			candidate.term > state.currentTerm {
+			state.votedFor = candidate.candidateID
+			state.currentTerm = candidate.term
+			vote.voteGranted = true
+		}
 	}
 	//A rpc descrita no artigo não trata o caso em que um CANDIDATO que já votou em si recebe
 	//RequestVote de outro candidato de TERMO MAIOR (caso comum que ocorre quando uma votação
@@ -161,28 +198,15 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestV
 	return nil
 }
 
-//Returns true if candidate requesting vote is at least as "up-to-date" as this server
-/* From paper:
-   Raft determines which of two logs is more up-to-date
-   by comparing the index and term of the last entries in the
-   logs. If the logs have last entries with different terms, then
-   the log with the later term is more up-to-date. If the logs
-   end with the same term, then whichever log is longer is
-   more up-to-date. */
-func isUpToDate(state *ServerState, candidate *RequestVoteArgs) bool {
-	return state.log[len(state.log)-1].term <= candidate.lastLogterm &&
-		len(state.log)-1 <= candidate.lastLogIndex
-}
-
 // RPC AppendEntry (Args, Reply)
 func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntriesResult) error {
 	state.mux.Lock()
 	defer state.mux.Unlock() //Will be called once function returns
 
-	rep.term = state.currentterm
+	rep.term = state.currentTerm
 	rep.success = false
 
-	if args.term < state.currentterm { // 1.  Reply false if term < currentterm
+	if args.term < state.currentTerm { // 1.  Reply false if term < currentTerm
 		return nil
 	}
 
@@ -212,7 +236,7 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 				state.commitIndex = args.leaderCommit
 			}
 		}
-		state.term = rep.term
+		state.currentTerm = rep.term
 		state.curState = FOLLOWER // When receiving AppendEntries -> convert to follower
 		rep.success = true
 	}
@@ -220,3 +244,24 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 	state.timer.Reset(Timer.GenRandom())
 	return nil
 }
+
+//==============================================================================
+
+//==============================================================================
+// Miscellaneous
+//==============================================================================
+
+//Returns true if candidate requesting vote is at least as "up-to-date" as this server
+/* From paper:
+   Raft determines which of two logs is more up-to-date
+   by comparing the index and term of the last entries in the
+   logs. If the logs have last entries with different terms, then
+   the log with the later term is more up-to-date. If the logs
+   end with the same term, then whichever log is longer is
+   more up-to-date. */
+func isUpToDate(state *ServerState, candidate *RequestVoteArgs) bool {
+	return state.log[len(state.log)-1].term <= candidate.lastLogterm &&
+		len(state.log)-1 <= candidate.lastLogIndex
+}
+
+//==============================================================================
