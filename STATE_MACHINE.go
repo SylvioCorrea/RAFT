@@ -4,19 +4,28 @@ import (
 		. "./RPC"
 		. "./Timer"
 		"time"
-		"net"
+		"net/rpc"
 		)
 
+
+
 		
-func (state *ServerState) transitions(servers []net.Conn, dataChan chan int, myID int) error {
-	following   := make(chan int, 1)
-	elected     := make(chan int, 1)
-	candidature := make(chan int, 1)
+func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, myID int) error {
+	
+	//All servers start as followers
+	state.curState = FOLLOWER
+
+	//Register own rpc server
+	state.SetupRPCServer()
+
+	//Get all client connections to send rpc calls to the other servers
+	var clientConnections []*rpc.Client
+	clientConnections = state.SetupRPCClients()
+
 	max_term    := make(chan int, 1)
 
+	//Election uses it's own timer
 	electionTimer = NewTimer(0)
-
-	following <- 1
 	max_term  <- 1
 
 	for {
@@ -91,103 +100,85 @@ func (state *ServerState) transitions(servers []net.Conn, dataChan chan int, myI
 			//========================================
 			// Leader routine
 			//========================================
-			/* IMPORTANTE:
-			   
-			   Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;
-			   repeat during idle periods to prevent election timeouts (§5.2)
-			   
-			   O lider manda o AppendEntry inicial vazio para saber, para cada outro servidor,
-			   seu prevLogindex
-			*/
 			
 			case LEADER: // As leader
-				/*
-				type AppendEntriesArgs struct {
-					term         int
-					leaderId     int
-					prevLogIndex int
-					prevLogterm  int
-					entries      []LogEntry
-					leaderCommit int
-				}
-				*/
-                //Atualiza o lastIndex
-                for i := 0; i<len(state.lastIndex); i++ {
-                    state.lastIndex[i] = len(state.log)
+				
+				//Timer between AppendEntries
+				leader_timer := NewTimer(0)
+				
+				//Updates lastIndex and matchIndex for all servers
+				nOfServers := len(serverPorts)
+				for i := 0; i<nOfServers; i++ {
+					state.lastIndex[i] = len(state.log)
+					state.matchIndex[i] = 0
                 }
 				
-				for server := range servers { //Colocar isso dentro de um semaforo
-					ae := AppendEntriesArgs {
-						term: state.term,
-						leaderId: state.myID,
-						prevLogindex: nextIndex[server.myID] - 1,
-						prevLogTerm: state.log[ nextIndex[server.myID] - 1 ].term,
-						entries: make([]LogEntry),
-						leaderCommit: state.commitIndex }
-				    
-				    if(len(state.log)
-				}
-				
+				//Channel to abort rpc call threads
+				abortChan := make(chan int, len(clientConnections)-1)
+				//Channel to pass rpc replies
+				replyChan := make(chan int, len(clientConnections)-1)
 
-
-
-
-
-				leader_timer := NewTimer(0)
-				// for{ // Start leader procedure
-
-					state.mux.Lock()
-					// if state.timer.Stop() { // A new leader has already been elected
-					// 	remainingTime := <- state.timer.C
-					// 	state.timer.Reset(remainingTime)
-					// 	following <- 1
-					// 	state.mux.Unlock()
-					// 	break
-					// }
-					myterm = state.currentterm
-					state.mux.Unlock()
-
-					switch {
-						case <- leader_timer.C:
-							for server := range servers {
-								sendAppend(server, myterm, myID)
-							}
-
-						case data := <- dataChan:
-							// aplica log
-							for server := range servers {
-								sendAppend(server, myterm, myID)
-							}							
-
-						default:
-
+				//Send initial empty AppendEntries for everyone
+				for i, clientConn := range(clientConnections) { //TODO: lock mux before?
+					if i != state.id { // TODO:  Should the server send AppendEntries to itself?
+						ae := &AppendEntriesArgs {
+							term: 			state.term,
+							leaderId: 		state.id,
+							prevLogindex: 	nextIndex[server.myID] - 1,
+							prevLogTerm: 	state.log[ nextIndex[server.myID] - 1 ].term,
+							entries: 		make([]LogEntry, 0), //First AppendEntries is always empty
+							leaderCommit: 	state.commitIndex }
+						
+						go state.sendAppend(clientConn, ae)
 					}
-					leader_timer.Reset(Timer.LeaderTimer())
-					
+				}
+				leader_timer.Reset(LeaderTimer())
+				remainingCalls := nOfServers - 1 //Ongoing calls
+				replyChan := make(chan *AppendEntriesResult) //Receive replies from rpcs in this buffered channel
+				
+				
+				for state.curState == LEADER { //Start leader loop
+					select {
+					case <- leader_timer.C:
+						for i:=0; i<remainingCalls; i++ {
+							abortChan <- 1
+						}
+						//send new appends
+						//create new abort and reply channels
+						leader_timer.Reset(Timer.LeaderTimer())
 
+					case reply := <- replyChan:
+						//process reply
+						remainingCalls--
 					
-					
-				// }
+					default:
+						//Go through loop check again to avoid hanging in this select if no longer leader
+					}
+				}
+
+				//Abort remaining calls if any
+				for i:=0; i<remainingCalls; i++ {
+					abortChan <- 1
+				}
 		}
 	}
 }
 
-
-func (state *ServerState) sendAppend(server net.Conn, term int, myID int) {
-	voteInfo = ReplyInfo{state.term, false}
-
-	index := len(state.log)
-	args = AppendEntriesArgs {
-		state.term        ,
-		myID              ,
-		index             ,
-		state.log[index]  ,
-		state.log         ,
-		state.commitIndex
+//Asynchronous call to AppendEntries RPC
+func (state *ServerState) sendAppend(server *Client, ae *AppendEntriesArgs,
+									 replyChan chan *AppendEntriesResult, abortChan chan int) {
+	
+	send = server.Go("ServerState.AppendEntry", args, voteInfo) // TODO: correct the call parameters
+	select {
+	case replyChan <- send.Done:
+	case <- abortChan:
+		//abort received
 	}
 
-	send = server.Call("AppendEntry", args, voteInfo) // TODO: correct the call parameters
 }
+
+
+
 
 func (state *ServerState) sendVotes(server net.Conn, done chan int, exit chan int, term chan int, myID int) {
 	voteInfo = ReplyInfo{state.term, false}

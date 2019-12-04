@@ -3,7 +3,9 @@ package RPC
 import (
 	"sync"
 	"time"
-
+	"net"
+	"net/rpc"
+	"net/http"
 	"../Timer"
 )
 
@@ -14,6 +16,14 @@ const (
 	CANDIDATE
 )
 
+//Ports for all servers. Server ports and addresses are static and known to all.
+//In this case, all servers are expected to work on loopback.
+var serverPorts = []string{
+	":8000",
+	":8001",
+	":8002"
+}
+
 // Log Entry (appended $VALUE at $TERM)
 type LogEntry struct {
 	term  int
@@ -22,6 +32,9 @@ type LogEntry struct {
 
 // Processes' state
 type ServerState struct {
+	//Extras (not in figure 2)
+	id int
+
 	// Persistent
 	currentterm int
 	votedFor    int //Should start as -1 since int cannot be nil
@@ -39,12 +52,43 @@ type ServerState struct {
 	timer    time.Timer
 	curState int
 	mux      sync.Mutex
-	/*
-		curState :
-			- 0 == Follower
-			- 1 == Candidate
-			- 2 == Leader
-	*/
+}
+
+//Register and run rpc server
+func (state *ServerState) SetupRPCServer() {
+	rpc.Register(state)
+    
+    rpc.HandleHTTP()
+    port := serverPorts[state.id]
+    l, e := net.Listen("tcp", port)
+    if e != nil {
+        log.Fatal("listen error:", e)
+    }
+    
+    fmt.Println("Server online.")
+    //Starts servicing
+    go http.Serve(l, nil)
+    fmt.Println("Waiting calls.")
+}
+
+//Setup all rpc client connections and return them in a slice of pointers
+func (state *ServerState) SetupRPCClients() []*rpc.Client {
+	clientConnections := make([]*rpc.Client, len(serverPorts))
+	
+	for i:=0; i<len(clients); i++ {
+		serverAddress
+		client, err := rpc.DialHTTP("tcp", "127.0.0.1" + serverPorts[i])
+		
+		for err != nil { //If dial failed, try again until it succeeds. All servers are expected work on start
+			log.Fatal("dialing:", err)
+			log.Fatal("Trying again.")
+			client, err = rpc.DialHTTP("tcp", "127.0.0.1" + serverPorts[i])
+		}
+		
+		clientConnections[i] = client //store client on slice
+	}
+
+	return clientConnections
 }
 
 /*
