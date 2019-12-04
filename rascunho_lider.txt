@@ -1,0 +1,46 @@
+
+for all i:
+	nextIndex[i] = len(log do lider) + 1
+
+appendEntries vazio para todos
+
+	enquanto lider {
+
+		leader timer start
+
+		appendEntriesFunc(..., vetor[k])
+
+		<- leader timer
+		aborta recebimentos
+
+
+
+	}
+
+
+
+appendEntriesFunction(server) {
+	
+	se nextindex[server] >= len(log do lider)
+		manda appendentries vazio
+	senao
+		manda todo o log do nextindex em diante
+
+	go rpc appendentries
+
+	select {
+
+		<- done
+			se recebeu falso:
+				nextindex[server]--
+
+			senao 
+				nextindex[server] = len(log)
+
+		<- abort
+			termina a função ignorando o recebimento
+
+	}
+
+
+}	

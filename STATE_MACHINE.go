@@ -20,17 +20,16 @@ func (state *ServerState) transitions(servers []net.Conn, dataChan chan int, myI
 	max_term  <- 1
 
 	for {
-		select{
+		switch state.curState {
 			//========================================
 			// Follower routine
 			//========================================
-			case <- following:
+			case FOLLOWER:
 				// state.timer.Reset(genRandom())
 
 				<- state.timer.C   // Timer expired
 
 				state.curState = CANDIDATE // Convert to candidate
-				candidate <- 1
 
 			
 			
@@ -38,59 +37,52 @@ func (state *ServerState) transitions(servers []net.Conn, dataChan chan int, myI
 			//========================================
 			// Cadidate routine
 			//========================================
-			case <- candidature:
-				finished := false
+			case CANDIDATE:
 				
-				for !finished {
-					electionTimer.Reset(genRandom())
 
-					state.mux.Lock()
-					if state.timer.Stop(){ // A new leader has already been elected
-						remainingTime := <- state.timer.C
-						state.timer.Reset(remainingTime)
-						following <- 1
-						state.mux.Unlock()
-						break
-					}
-					state.mux.Unlock()
+				state.mux.Lock() //This server might receive AppendEntries or RequestVotes during this operation
+				max_term := make(chan int, len(servers))
+				tmpTerm := <- max_term
+				if tmpTerm > state.currentterm { 
+					state.currentterm = tmpTerm
+				}
+				max_term <- state.currentterm
+				rcvdVotes := 1
+				votedFor = myID
+				state.mux.Unlock()
+				
+				electionTimer.Reset(genRandom())
 
-					exit := make(chan int, len(servers))
-					done := make(chan int, len(servers))
-					
-					rcvdVotes := 1
+				exit := make(chan int, len(servers))
+				done := make(chan int, len(servers))
+				
 
-					for server := range servers {
-						go state.sendVotes(server, done, exit, max_term, myID)
-					}
 
-					cont := true
-					tmpTerm := <- max_term
-					if tmpTerm > state.currentterm { 
-						state.currentterm = tmpTerm
-					}
-					max_term <- state.currentterm
+				for server := range servers {
+					go state.sendVotes(server, done, exit, max_term, myID)
+				}
 
-					for rcvdVotes < majority && cont{
-						select{
-							case <- electionTimer.C:case tmp:= <- done
-								for i := 0; i < len(server); i++ {
-									exit <- 1
-								}
-								cont = false
 
-							case tmp:= <- done:
-								rcvdVotes++
-						}
-					}
+				electionStillGoing := true
+				//Receive votes
+				for rcvdVotes < majority && electionStillGoing{
+					select{
+						case <- electionTimer.C:
+							//Election timed out. Stop waiting for responses. Start new election
+							for i := 0; i < len(server); i++ {
+								exit <- 1
+							}
+							electionStillGoing = false
 
-					if rcvdVotes >= majority{
-						finished = true
+						case tmp:= <- done:
+							rcvdVotes++
 					}
 				}
 
-				if finished{
-					elected <- 1
+				if rcvdVotes >= majority{
+					state.curState = LEADER
 				}
+				
 
 
 			
@@ -108,36 +100,74 @@ func (state *ServerState) transitions(servers []net.Conn, dataChan chan int, myI
 			   seu prevLogindex
 			*/
 			
-			case <- elected: // As leader
+			case LEADER: // As leader
+				/*
+				type AppendEntriesArgs struct {
+					term         int
+					leaderId     int
+					prevLogIndex int
+					prevLogterm  int
+					entries      []LogEntry
+					leaderCommit int
+				}
+				*/
+
+				for server := range servers { //Colocar isso dentro de um semaforo
+					ae := AppendEntriesArgs {
+						term: state.term
+						leaderId: state.myID
+						prevLogindex: nextIndex[server.myID] - 1
+						prevLogTerm: state.log[ nextIndex[server.myID] - 1 ].term
+						entries:
+						leaderCommit: state.commitIndex
+					}
+				}
+
+
+
+
+
 				leader_timer := NewTimer(0)
-				for{ // Start leader procedure
-					<- leader_timer.C
+				// for{ // Start leader procedure
 
 					state.mux.Lock()
-					if state.timer.Stop(){ // A new leader has already been elected
-						remainingTime := <- state.timer.C
-						state.timer.Reset(remainingTime)
-						following <- 1
-						state.mux.Unlock()
-						break
-					}
+					// if state.timer.Stop() { // A new leader has already been elected
+					// 	remainingTime := <- state.timer.C
+					// 	state.timer.Reset(remainingTime)
+					// 	following <- 1
+					// 	state.mux.Unlock()
+					// 	break
+					// }
+					myterm = state.currentterm
 					state.mux.Unlock()
 
-					
-					for server := range servers {
-						sendAppend(server, max_term)
+					switch {
+						case <- leader_timer.C:
+							for server := range servers {
+								sendAppend(server, myterm, myID)
+							}
+
+						case data := <- dataChan:
+							// aplica log
+							for server := range servers {
+								sendAppend(server, myterm, myID)
+							}							
+
+						default:
+
 					}
-
-
 					leader_timer.Reset(Timer.LeaderTimer())
 					
-				}
+
+					
+					
+				// }
 		}
 	}
 }
 
 
-func (state *ServerState) sendAppend(server net.Conn, term chan int, myID int) {
+func (state *ServerState) sendAppend(server net.Conn, term int, myID int) {
 	voteInfo = ReplyInfo{state.term, false}
 
 	index := len(state.log)

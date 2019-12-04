@@ -63,7 +63,7 @@ type AppendEntriesArgs struct {
 	term         int
 	leaderId     int
 	prevLogIndex int
-	prevLogterm  int
+	prevLogTerm  int
 	entries      []LogEntry
 	leaderCommit int
 }
@@ -100,10 +100,13 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestV
 		vote.voteGranted = false
 
 		// 2. If votedFor is null or candidateId, and candidate is up to date, grant vote
-	} else if (state.votedFor == -1 || state.votedFor == candidate.candidateId) && isUpToDate(state, candidate) {
-		state.votedFor = candidate.candidateId
-		state.currentterm = candidate.term
-		vote.voteGranted = true
+	} else if isUpToDate(state, candidate) {
+        if (state.votedFor == -1 || state.votedFor == candidate.candidateId)
+            || candidate.term > state.currentterm {
+		    state.votedFor = candidate.candidateId
+		    state.currentterm = candidate.term
+		    vote.voteGranted = true
+        }
 	}
 	//A rpc descrita no artigo não trata o caso em que um CANDIDATO que já votou em si recebe
 	//RequestVote de outro candidato de TERMO MAIOR (caso comum que ocorre quando uma votação
@@ -139,15 +142,15 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 		return nil
 	}
 
-	if !state.timer.Stop() {
+	if !state.timer.Stop() && state.curState == FOLLOWER {
 		return nil
 	}
 
 	if len(state.log) < args.prevLogIndex || // 2.  Reply false if log doesn’t contain an entry at prevLogIndex
-		state.log[args.prevLogIndex].term != args.prevLogterm { // whose term matches prevLogterm
+		state.log[args.prevLogIndex].term != args.prevLogTerm { // whose term matches prevLogTerm
 		// return nil // restart timer
 	} else {
-		// if state.log[args.prevLogIndex].term == args.prevLogterm {
+		// if state.log[args.prevLogIndex].term == args.prevLogTerm {
 		// 3. If an existing entry conflicts with a new one (same index but different terms)
 		state.log = state.log[:args.prevLogIndex+1] // delete the existing entry and all that follow it
 		// }
@@ -165,7 +168,7 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 				state.commitIndex = args.leaderCommit
 			}
 		}
-
+		state.term = rep.term
 		state.curState = FOLLOWER // When receiving AppendEntries -> convert to follower
 		rep.success = true
 	}
