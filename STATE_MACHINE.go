@@ -4,9 +4,11 @@ import (
 		. "./RPC"
 		. "./Timer"
 		"time"
+		"net"
 		)
 
-func (state *ServerState) transitions() error {
+		
+func (state *ServerState) transitions(servers []net.Conn, dataChan chan int, myID int) error {
 	following   := make(chan int, 1)
 	elected     := make(chan int, 1)
 	candidature := make(chan int, 1)
@@ -19,10 +21,6 @@ func (state *ServerState) transitions() error {
 
 	for {
 		select{
-			
-			
-			
-			
 			//========================================
 			// Follower routine
 			//========================================
@@ -61,8 +59,8 @@ func (state *ServerState) transitions() error {
 					
 					rcvdVotes := 1
 
-					for each other server {
-						go state.sendVotes(done, exit, max_term)
+					for server := range servers {
+						go state.sendVotes(server, done, exit, max_term, myID)
 					}
 
 					cont := true
@@ -104,7 +102,7 @@ func (state *ServerState) transitions() error {
 			/* IMPORTANTE:
 			   
 			   Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;
-			   repeat during idle periods toprevent election timeouts (§5.2)
+			   repeat during idle periods to prevent election timeouts (§5.2)
 			   
 			   O lider manda o AppendEntry inicial vazio para saber, para cada outro servidor,
 			   seu prevLogindex
@@ -126,8 +124,8 @@ func (state *ServerState) transitions() error {
 					state.mux.Unlock()
 
 					
-					for each other server {
-						manda appendentries
+					for server := range servers {
+						sendAppend(server, max_term)
 					}
 
 
@@ -139,22 +137,34 @@ func (state *ServerState) transitions() error {
 }
 
 
-func (state *ServerState) sendAppend(done chan int, exit chan int, term chan int) {
+func (state *ServerState) sendAppend(server net.Conn, term chan int, myID int) {
 	voteInfo = ReplyInfo{state.term, false}
 
-	send = client.AppendEntries()
-}
-
-func (state *ServerState) sendVotes(done chan int, exit chan int, term chan int) {
-	voteInfo = ReplyInfo{state.term, false}
-	args = RequestVoteArgs{
-		state.term   ,
-		state.myID   ,
-		lastLogIndex ,
-		lastLogterm 
+	index := len(state.log)
+	args = AppendEntriesArgs {
+		state.term        ,
+		myID              ,
+		index             ,
+		state.log[index]  ,
+		state.log         ,
+		state.commitIndex
 	}
 
-	send = client.Go("state.RequestVote", args, voteInfo)
+	send = server.Call("AppendEntry", args, voteInfo) // TODO: correct the call parameters
+}
+
+func (state *ServerState) sendVotes(server net.Conn, done chan int, exit chan int, term chan int, myID int) {
+	voteInfo = ReplyInfo{state.term, false}
+
+	index := len(state.log)
+	args = RequestVoteArgs{
+		state.term       ,
+		myID             ,
+		index            ,
+		state.log[index]
+	}
+
+	send = server.Go("state.RequestVote", args, voteInfo) // TODO: correct the call parameters
 	select {
 		case <- send.Done:
 			if voteInfo.reply{
