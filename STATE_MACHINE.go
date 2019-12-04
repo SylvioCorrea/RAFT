@@ -111,17 +111,23 @@ func (state *ServerState) transitions(servers []net.Conn, dataChan chan int, myI
 					leaderCommit int
 				}
 				*/
-
+                //Atualiza o lastIndex
+                for i := 0; i<len(state.lastIndex); i++ {
+                    state.lastIndex[i] = len(state.log)
+                }
+				
 				for server := range servers { //Colocar isso dentro de um semaforo
 					ae := AppendEntriesArgs {
-						term: state.term
-						leaderId: state.myID
-						prevLogindex: nextIndex[server.myID] - 1
-						prevLogTerm: state.log[ nextIndex[server.myID] - 1 ].term
-						entries:
-						leaderCommit: state.commitIndex
-					}
+						term: state.term,
+						leaderId: state.myID,
+						prevLogindex: nextIndex[server.myID] - 1,
+						prevLogTerm: state.log[ nextIndex[server.myID] - 1 ].term,
+						entries: make([]LogEntry),
+						leaderCommit: state.commitIndex }
+				    
+				    if(len(state.log)
 				}
+				
 
 
 
