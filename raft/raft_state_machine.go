@@ -3,7 +3,8 @@ package raft
 import (
 	"net/rpc"
 	"time"
-
+    "fmt"
+    "math/rand"
 	"./Timer"
 )
 
@@ -13,17 +14,20 @@ type AppendReplyAux struct {
 	reply    *AppendEntriesResult //Server reply
 }
 
-func (state *ServerState) ServerMainLoop() error {
+func (state *ServerState) ServerMainLoop() {
+    rand.Seed(int64(state.id))
 
 	//All servers start as followers
 	state.curState = FOLLOWER
 
 	//Register own rpc server
-	state.SetupRPCServer()
+	go state.SetupRPCServer()
+	fmt.Println("RPC services registered for ", state.id)
 
 	//Get all client connections to send rpc calls to the other servers
 	var clientConnections []*rpc.Client
 	clientConnections = state.SetupRPCClients()
+	fmt.Println("All RPC client connections dialed for", state.id)
 
 	max_term := make(chan int, 1)
 
@@ -43,10 +47,13 @@ func (state *ServerState) ServerMainLoop() error {
 		// Follower routine
 		//========================================
 		case FOLLOWER:
+		    fmt.Println("server ", state.id, "is now a follower")
 			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-			// state.timer.Reset(genRandom())
-
+			state.timer.Reset(Timer.GenRandom())
+            fmt.Println(state.id, ": timer start")
 			<-state.timer.C // Timer expired
+			fmt.Println(state.id, ": timer expired")
+
 
 			state.curState = CANDIDATE // Convert to candidate
 
@@ -55,14 +62,9 @@ func (state *ServerState) ServerMainLoop() error {
 		//========================================
 		case CANDIDATE:
 			//TODO: serialize vote processing
-			max_term := make(chan int, nOfServers)
-			tmpTerm := <-max_term
-			if tmpTerm > state.currentTerm {
-				state.currentTerm = tmpTerm
-			}
-			max_term <- state.currentTerm
-			rcvdVotes := 1
+			fmt.Println("server ", state.id, "is now a cadidate")
 			state.votedFor = state.id
+			rcvdVotes := 1
 			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 			electionTimer.Reset(Timer.GenRandom())
@@ -70,8 +72,10 @@ func (state *ServerState) ServerMainLoop() error {
 			exit := make(chan int, nOfServers-1)
 			done := make(chan int, nOfServers-1)
 
-			for _, server := range clientConnections {
-				go state.sendRequestVotes(server, done, exit, max_term, state.id)
+			for i, server := range clientConnections {
+				if i != state.id {
+				    go state.sendRequestVotes(server, done, exit, state.id)
+				}
 			}
 
 			electionStillGoing := true
@@ -86,12 +90,15 @@ func (state *ServerState) ServerMainLoop() error {
 					electionStillGoing = false
 
 				case <-done:
+				       fmt.Println("RN", rcvdVotes, majority)
 					rcvdVotes++
 				}
 			}
 
 			if rcvdVotes >= majority {
 				state.curState = LEADER
+			} else {
+				state.votedFor = -1
 			}
 
 		//========================================
@@ -99,6 +106,7 @@ func (state *ServerState) ServerMainLoop() error {
 		//========================================
 
 		case LEADER:
+		    fmt.Println("=====> server ", state.id, "is now a leader <=======")
 
 			//Updates lastIndex and matchIndex for all servers
 			nOfServers := len(serverPorts)
@@ -118,7 +126,7 @@ func (state *ServerState) ServerMainLoop() error {
 						term:         state.currentTerm,
 						leaderID:     state.id,
 						prevLogIndex: state.nextIndex[i] - 1,
-						prevLogTerm:  state.log[state.nextIndex[i-1]].term,
+						prevLogTerm:  state.log[state.nextIndex[i]-1].term,
 						entries:      make([]LogEntry, 0), //First AppendEntries is always empty
 						leaderCommit: state.commitIndex}
 
@@ -208,31 +216,36 @@ func (state *ServerState) sendAppend(serverID int, server *rpc.Client, aeArgs *A
 
 }
 
-func (state *ServerState) sendRequestVotes(server *rpc.Client, done chan int, exit chan int, term chan int, myID int) {
+func (state *ServerState) sendRequestVotes(server *rpc.Client, done chan int, exit chan int, myID int) {
 	vote := &RequestVoteResult{0, false}
 
 	index := len(state.log) - 1
-
+    
 	reqVoteArgs := &RequestVoteArgs{
-		term:         state.currentTerm,
-		candidateID:  state.id,
-		lastLogIndex: index,
-		lastLogterm:  state.log[index].term}
-
+		Term:         state.currentTerm,
+		CandidateID:  state.id,
+		LastLogIndex: index,
+		LastLogterm:  state.log[index].term}
+    
 	rpcCall := server.Go("ServerState.RequestVote", reqVoteArgs, vote, nil) // TODO: correct the call parameters
+	fmt.Println("request sent")
 	select {
-	case <-rpcCall.Done:
-		if vote.voteGranted {
-			done <- 1
+	case err := <-rpcCall.Done:
+		if err != nil {
+		    fmt.Println(err)
 		}
+		state.mux.Lock()
+		if state.curState == CANDIDATE {
+		    if vote.VoteGranted {
+			    done <- 1
+		    }
 
-		cur := <-term
-		if cur < vote.term {
-			cur = vote.term
+		    state.currentTerm = vote.Term
 		}
-		term <- cur
-
+		state.mux.Unlock()
 	case <-exit:
-		return
+		fmt.Println("request exit chan")
+		//leave select
 	}
+	fmt.Println("request finished")
 }

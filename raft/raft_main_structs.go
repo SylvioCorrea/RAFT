@@ -79,6 +79,6 @@ func ServerStateInit(id int) *ServerState {
 
 	//To avoid unnecessary headache, all servers start with one identical base log entry
 	baseLogEntry := LogEntry{term: 0, value: 0}
-	server.log[1] = baseLogEntry
+	server.log[0] = baseLogEntry
 	return server
 }

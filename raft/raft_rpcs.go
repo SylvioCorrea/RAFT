@@ -28,6 +28,7 @@ func (state *ServerState) SetupRPCServer() {
 	//Starts servicing
 	go http.Serve(l, nil)
 	fmt.Println("Waiting calls.")
+	select{} //Block forever
 }
 
 //Setup all rpc client connections and return them in a slice of pointers
@@ -38,14 +39,14 @@ func (state *ServerState) SetupRPCClients() []*rpc.Client {
 		client, err := rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[i])
 
 		for err != nil { //If dial failed, try again until it succeeds. All servers are expected work on start
-			log.Fatal("dialing:", err)
-			log.Fatal("Trying again.")
+			fmt.Println("dialing: error")
+			fmt.Println("Trying again.")
 			client, err = rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[i])
 		}
 
 		clientConnections[i] = client //store client on slice
 	}
-
+	
 	return clientConnections
 }
 
@@ -64,10 +65,10 @@ type AppendEntriesArgs struct {
 
 // RequestVote parameters
 type RequestVoteArgs struct {
-	term         int
-	candidateID  int
-	lastLogIndex int
-	lastLogterm  int
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogterm  int
 }
 
 type AppendEntriesResult struct {
@@ -76,8 +77,8 @@ type AppendEntriesResult struct {
 }
 
 type RequestVoteResult struct {
-	term        int
-	voteGranted bool
+	Term        int
+	VoteGranted bool
 }
 
 //==============================================================================
@@ -88,24 +89,30 @@ type RequestVoteResult struct {
 
 // RPC RequestVote (Args, Reply)
 func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestVoteResult) error {
+	fmt.Println("request vote received")
 	state.mux.Lock()
 	defer state.mux.Unlock() //Will be called once function returns
 
-	vote.term = state.currentTerm
-	vote.voteGranted = false
+	vote.Term = state.currentTerm
+	vote.VoteGranted = false
 
 	// 1. Reply false if term < currentTerm
-	if candidate.term < state.currentTerm {
-		vote.voteGranted = false
-
+	if candidate.Term < state.currentTerm {
+		vote.VoteGranted = false
+        fmt.Println("vote false: candidate has lower term")
 		// 2. If votedFor is null or candidateID, and candidate is up to date, grant vote
 	} else if isUpToDate(state, candidate) {
-		if (state.votedFor == -1 || state.votedFor == candidate.candidateID) ||
-			candidate.term > state.currentTerm {
-			state.votedFor = candidate.candidateID
-			state.currentTerm = candidate.term
-			vote.voteGranted = true
+		if (state.votedFor == -1 || state.votedFor == candidate.CandidateID) ||
+			candidate.Term > state.currentTerm {
+			fmt.Println("voted for ", state.votedFor)
+			state.votedFor = candidate.CandidateID
+			state.currentTerm = candidate.Term
+			vote.VoteGranted = true
+		} else {
+		    fmt.Println("vote false: voteFor not nil or not candidate")
 		}
+	} else {
+	    fmt.Println("vote false: not up-to-date")
 	}
 	//A rpc descrita no artigo não trata o caso em que um CANDIDATO que já votou em si recebe
 	//RequestVote de outro candidato de TERMO MAIOR (caso comum que ocorre quando uma votação
@@ -178,8 +185,8 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
    end with the same term, then whichever log is longer is
    more up-to-date. */
 func isUpToDate(state *ServerState, candidate *RequestVoteArgs) bool {
-	return state.log[len(state.log)-1].term <= candidate.lastLogterm &&
-		len(state.log)-1 <= candidate.lastLogIndex
+	return state.log[len(state.log)-1].term <= candidate.LastLogterm &&
+		len(state.log)-1 <= candidate.LastLogIndex
 }
 
 //==============================================================================
