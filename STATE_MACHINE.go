@@ -29,11 +29,13 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 	max_term  <- 1
 
 	for {
-		switch state.curState {
+		switch state.mux.Lock(); state.curState { //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 			//========================================
 			// Follower routine
 			//========================================
 			case FOLLOWER:
+				state.mux.Unlock()
+				//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 				// state.timer.Reset(genRandom())
 
 				<- state.timer.C   // Timer expired
@@ -47,9 +49,6 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 			// Cadidate routine
 			//========================================
 			case CANDIDATE:
-				
-
-				state.mux.Lock() //This server might receive AppendEntries or RequestVotes during this operation
 				max_term := make(chan int, len(servers))
 				tmpTerm := <- max_term
 				if tmpTerm > state.currentterm { 
@@ -59,6 +58,7 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 				rcvdVotes := 1
 				votedFor = myID
 				state.mux.Unlock()
+				//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 				
 				electionTimer.Reset(genRandom())
 
@@ -103,9 +103,6 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 			
 			case LEADER: // As leader
 				
-				//Timer between AppendEntries
-				leader_timer := NewTimer(0)
-				
 				//Updates lastIndex and matchIndex for all servers
 				nOfServers := len(serverPorts)
 				for i := 0; i<nOfServers; i++ {
@@ -113,7 +110,10 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 					state.matchIndex[i] = 0
                 }
 				
-				
+				//Channel to abort rpc call threads
+				abortChan := make(chan int, len(clientConnections)-1)
+				//Channel to pass rpc replies
+				replyChan := make(chan *AppendEntriesResult) //Receive replies from rpcs ONE AT A TIME extra carefully
 				//Send initial empty AppendEntries for everyone
 				for i, clientConn := range(clientConnections) { //TODO: lock mux before?
 					if i != state.id { // TODO:  Should the server send AppendEntries to itself?
@@ -125,32 +125,63 @@ func (state *ServerState) ServerMainLoop(servers []net.Conn, dataChan chan int, 
 							entries: 		make([]LogEntry, 0), //First AppendEntries is always empty
 							leaderCommit: 	state.commitIndex }
 							
-							go state.sendAppend(clientConn, aeArgs)
+							go state.sendAppend(clientConn, aeArgs, replyChan, abortChan)
 						}
 					}
 				}
-				remainingCalls := nOfServers - 1 //Ongoing calls
-				//Channel to abort rpc call threads
-				abortChan := make(chan int, len(clientConnections)-1)
-				//Channel to pass rpc replies
-				replyChan := make(chan *AppendEntriesResult) //Receive replies from rpcs ONE AT A TIME extra carefully
-				leader_timer.Reset(LeaderTimer())
+				state.mux.Unlock()
+				//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 				
+				remainingCalls := nOfServers - 1 //Ongoing calls
+				
+				leader_timer := time.NewTimer(LeaderTimer()) //Leader will wait on this timer to send new AppendEntries
 				
 				for state.curState == LEADER { //Start leader loop
 					select {
-					case <- leader_timer.C:
+					
+					case <- leader_timer.C: //Time to send new Appends
 						for i:=0; i<remainingCalls; i++ {
 							abortChan <- 1
 						}
-						//send new appends
-						//create new abort and reply channels
+						
+						//Make new abort and reply channels
+						abortChan = make(chan int, len(clientConnections)-1)
+						replyChan = make(chan *AppendEntriesResult)
+						
+						//Send new AppendEntries
+						state.mux.Lock()
+						if state.curState == LEADER {
+							for i, clientConn := range(clientConnections) { //TODO: lock mux before?
+								if i != state.id { // TODO:  Should the server send AppendEntries to itself?
+									aeArgs := &AppendEntriesArgs {
+										term: 			state.term,
+										leaderId: 		state.id,
+										prevLogindex: 	nextIndex[i] - 1,
+										prevLogTerm: 	state.log[ nextIndex[i] - 1 ].term,
+										entries: 		nil,
+										leaderCommit: 	state.commitIndex }
+										
+									
+									if nextIndex[i] <= len(log) - 1 { //Send new entries
+										aeArgs.entries = state.log(state.nextIndex[i]:)
+									} else { //Send just heartbeat
+										aeArgs.entries = []LogEntry{}
+									}
+									go state.sendAppend(clientConn, aeArgs)
+								}
+							}
+						}
+						state.mux.Unlock()
+						//Reset remainingCalls and timer
+						remainingCalls = nOfServers - 1
 						leader_timer.Reset(Timer.LeaderTimer())
 
-					case reply := <- replyChan:
+					
+						
+					case reply := <- replyChan: //Some server replied to the Append
 						//process reply
 						remainingCalls--
-					
+						
 					default:
 						//Go through loop check again to avoid hanging in this select if no longer leader
 					}
@@ -191,7 +222,7 @@ func (state *ServerState) sendVotes(server net.Conn, done chan int, exit chan in
 		state.log[index]
 	}
 
-	send = server.Go("state.RequestVote", args, voteInfo) // TODO: correct the call parameters
+	send = server.Go("ServerState.RequestVote", args, voteInfo) // TODO: correct the call parameters
 	select {
 		case <- send.Done:
 			if voteInfo.reply{
