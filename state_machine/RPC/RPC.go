@@ -151,7 +151,6 @@ type RequestVoteArgs struct {
 	lastLogterm  int
 }
 
-// RPCs response
 type AppendEntriesResult struct {
 	term    int
 	success bool
