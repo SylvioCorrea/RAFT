@@ -32,8 +32,8 @@ var majority int = len(serverPorts)/2 + 1
 //==============================================================================
 // Log Entry (appended $VALUE at $TERM)
 type LogEntry struct {
-	term  int
-	value int
+	Term  int
+	Value int
 }
 
 // Processes' state
@@ -78,7 +78,26 @@ func ServerStateInit(id int) *ServerState {
 	<-server.timer.C
 
 	//To avoid unnecessary headache, all servers start with one identical base log entry
-	baseLogEntry := LogEntry{term: 0, value: 0}
+	baseLogEntry := LogEntry{Term: 0, Value: 0}
 	server.log[0] = baseLogEntry
 	return server
+}
+
+func (state *ServerState) IsFollower() bool {
+	return state.curState == FOLLOWER
+}
+
+func (state *ServerState) IsCandidate() bool {
+	return state.curState == CANDIDATE
+}
+
+func (state *ServerState) IsLeader() bool {
+	return state.curState == LEADER
+}
+
+func (state *ServerState) BecomeFollower() {
+	if !state.IsFollower() {
+		state.curState = FOLLOWER
+		state.votedFor = -1
+	}
 }

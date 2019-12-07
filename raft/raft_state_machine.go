@@ -1,25 +1,26 @@
 package raft
 
 import (
+	"fmt"
+	"math/rand"
 	"net/rpc"
 	"time"
-    "fmt"
-    "math/rand"
+
 	"./Timer"
 )
 
 //Struct used during leader processing of AppendEntries replies
 type AppendReplyAux struct {
-	serverID int                  //Server who responded AppendEntry call
+	serverID int //Server who responded AppendEntry call
+	callInfo *rpc.Call
 	reply    *AppendEntriesResult //Server reply
 }
 
 func (state *ServerState) ServerMainLoop() {
-    rand.Seed(int64(state.id))
+	rand.Seed(int64(state.id))
 
-	//All servers start as followers
-	state.curState = FOLLOWER
-
+	//Lock to avoid processing RPCs during initial setup
+	state.mux.Lock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 	//Register own rpc server
 	go state.SetupRPCServer()
 	fmt.Println("RPC services registered for ", state.id)
@@ -29,31 +30,40 @@ func (state *ServerState) ServerMainLoop() {
 	clientConnections = state.SetupRPCClients()
 	fmt.Println("All RPC client connections dialed for", state.id)
 
-	max_term := make(chan int, 1)
-
 	//Election uses it's own timer
 	electionTimer := time.NewTimer(0)
-	<-electionTimer.C
-	max_term <- 1
+	<-electionTimer.C //Empty the channel
+
+	//Candidate auxiliary channels
+	var voteChan chan *RequestVoteResult
+	var electionAbortChan chan int
 
 	//Leader auxiliary channels
 	var replyChan chan *AppendReplyAux
 	var abortChan chan int
 
+	//All servers start as followers
+	state.curState = FOLLOWER
+	state.timer.Reset(Timer.GenRandom())
+	fmt.Println("TIMER start.")
+	state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+	fmt.Println("Starting state machine for server ", state.id)
 	for {
 		//Mutex is LOCKED right before checking state. Initial setups for state change should follow immediately and then unlock
-		switch state.mux.Lock(); state.curState { //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+		state.mux.Lock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+		switch state.curState {
 		//========================================
 		// Follower routine
 		//========================================
 		case FOLLOWER:
-		    fmt.Println("server ", state.id, "is now a follower")
+			fmt.Println("server ", state.id, "is now a follower")
 			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-			state.timer.Reset(Timer.GenRandom())
-            fmt.Println(state.id, ": timer start")
+
+			//The server MUST NOT become a follower without having resetted it's timer
+			//Timer resets for followers happen upon receiving RPCs for which they can reply with TRUE
 			<-state.timer.C // Timer expired
 			fmt.Println(state.id, ": timer expired")
-
 
 			state.curState = CANDIDATE // Convert to candidate
 
@@ -61,44 +71,59 @@ func (state *ServerState) ServerMainLoop() {
 		// Cadidate routine
 		//========================================
 		case CANDIDATE:
-			//TODO: serialize vote processing
 			fmt.Println("server ", state.id, "is now a cadidate")
 			state.votedFor = state.id
 			rcvdVotes := 1
+
+			voteChan = make(chan *RequestVoteResult, nOfServers-1)
+			electionAbortChan = make(chan int, nOfServers-1)
+
+			//Request votes
+			for i, server := range clientConnections {
+				if i != state.id { //Do not request to yourself
+					go state.sendRequestVotes(server, voteChan, electionAbortChan)
+				}
+			}
 			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-			electionTimer.Reset(Timer.GenRandom())
-
-			exit := make(chan int, nOfServers-1)
-			done := make(chan int, nOfServers-1)
-
-			for i, server := range clientConnections {
-				if i != state.id {
-				    go state.sendRequestVotes(server, done, exit, state.id)
-				}
-			}
-
+			state.timer.Reset(Timer.GenRandom())
+			voteRequestsPending := nOfServers - 1
 			electionStillGoing := true
 			//Receive votes
-			for rcvdVotes < majority && electionStillGoing {
+			for electionStillGoing {
 				select {
-				case <-electionTimer.C:
+				case <-state.timer.C:
 					//Election timed out. Stop waiting for responses. Start new election
-					for i := 0; i < nOfServers-1; i++ {
-						exit <- 1
+					state.mux.Lock()
+					if state.curState == CANDIDATE { //Check just in case it might have become a follower in the meantime
+						state.currentTerm++
+						state.votedFor = -1
 					}
+					state.mux.Unlock()
 					electionStillGoing = false
 
-				case <-done:
-				       fmt.Println("RN", rcvdVotes, majority)
-					rcvdVotes++
-				}
-			}
+				case vote := <-voteChan:
+					voteRequestsPending--
+					if vote.VoteGranted {
+						rcvdVotes++
+						fmt.Println("Received votes: ", rcvdVotes)
+					}
+					state.mux.Lock()
+					if state.IsCandidate() && rcvdVotes >= majority {
+						//THIS SERVER WAS ELECTED LEADER
+						state.curState = LEADER
+						electionStillGoing = false
+					}
+					state.mux.Unlock()
 
-			if rcvdVotes >= majority {
-				state.curState = LEADER
-			} else {
-				state.votedFor = -1
+				}
+
+			}
+			//Election is over.
+
+			//Abort pending requests
+			for i := 0; i < voteRequestsPending; i++ {
+				electionAbortChan <- 1
 			}
 
 		//========================================
@@ -106,7 +131,7 @@ func (state *ServerState) ServerMainLoop() {
 		//========================================
 
 		case LEADER:
-		    fmt.Println("=====> server ", state.id, "is now a leader <=======")
+			fmt.Println("=====> server ", state.id, "is now a leader! term(", state.currentTerm, ") <=======")
 
 			//Updates lastIndex and matchIndex for all servers
 			nOfServers := len(serverPorts)
@@ -123,17 +148,18 @@ func (state *ServerState) ServerMainLoop() {
 			for i, clientConn := range clientConnections { //TODO: lock mux before?
 				if i != state.id { // TODO:  Should the server send AppendEntries to itself?
 					aeArgs := &AppendEntriesArgs{
-						term:         state.currentTerm,
-						leaderID:     state.id,
-						prevLogIndex: state.nextIndex[i] - 1,
-						prevLogTerm:  state.log[state.nextIndex[i]-1].term,
-						entries:      make([]LogEntry, 0), //First AppendEntries is always empty
-						leaderCommit: state.commitIndex}
+						Term:         state.currentTerm,
+						LeaderID:     state.id,
+						PrevLogIndex: state.nextIndex[i] - 1,
+						PrevLogTerm:  state.log[state.nextIndex[i]-1].Term,
+						Entries:      make([]LogEntry, 0), //First AppendEntries is always empty
+						LeaderCommit: state.commitIndex}
 
 					go state.sendAppend(i, clientConn, aeArgs, replyChan, abortChan)
 
 				}
 			}
+			fmt.Println("Initial AppendEntries sent.")
 			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 			remainingCalls := nOfServers - 1 //Ongoing calls
@@ -158,22 +184,23 @@ func (state *ServerState) ServerMainLoop() {
 						for i, clientConn := range clientConnections { //TODO: lock mux before?
 							if i != state.id { // Do not send appendentries to yourself
 								aeArgs := &AppendEntriesArgs{
-									term:         state.currentTerm,
-									leaderID:     state.id,
-									prevLogIndex: state.nextIndex[i] - 1,
-									prevLogTerm:  state.log[state.nextIndex[i]-1].term,
-									entries:      nil,
-									leaderCommit: state.commitIndex}
+									Term:         state.currentTerm,
+									LeaderID:     state.id,
+									PrevLogIndex: state.nextIndex[i] - 1,
+									PrevLogTerm:  state.log[state.nextIndex[i]-1].Term,
+									Entries:      nil,
+									LeaderCommit: state.commitIndex}
 
-								if state.nextIndex[i] <= len(state.log)-1 { //Send new entries
-									aeArgs.entries = state.log[state.nextIndex[i]:]
+								if state.nextIndex[i] < len(state.log) { //Send new entries
+									aeArgs.Entries = state.log[state.nextIndex[i]-1:]
 								} else { //Send just heartbeat
-									aeArgs.entries = []LogEntry{}
+									aeArgs.Entries = []LogEntry{}
 								}
 								go state.sendAppend(i, clientConn, aeArgs, replyChan, abortChan)
 							}
 						}
 					}
+					fmt.Println("AppendEntries sent.")
 					state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 					//Reset remainingCalls and timer
 					remainingCalls = nOfServers - 1
@@ -181,10 +208,15 @@ func (state *ServerState) ServerMainLoop() {
 
 				case replyAux := <-replyChan: //Some server replied to the Append
 					//process reply
-					if replyAux.reply.success {
+					if replyAux.callInfo.Error != nil { //RPC error. Ignore results as if call never returned.
+						fmt.Println("AppendEntries call error for server", replyAux.serverID, ":", replyAux.callInfo.Error)
+
+					} else if replyAux.reply.Success {
+						fmt.Println("AppendEntries reply: server", replyAux.serverID, "replied TRUE.")
 						state.nextIndex[replyAux.serverID] = len(state.log)
 						state.matchIndex[replyAux.serverID] = len(state.log) - 1
 					} else {
+						fmt.Println("AppendEntries reply: server", replyAux.serverID, "replied FALSE.")
 						state.nextIndex[replyAux.serverID]--
 					}
 					remainingCalls--
@@ -207,45 +239,37 @@ func (state *ServerState) sendAppend(serverID int, server *rpc.Client, aeArgs *A
 	appendRPCReply := &AppendEntriesResult{0, false}
 	rpcCall := server.Go("ServerState.AppendEntry", aeArgs, appendRPCReply, nil) // TODO: correct the call parameters
 	select {
-	case <-rpcCall.Done:
+	case callInfo := <-rpcCall.Done:
 		//process reply at leader's main loop
-		replyChan <- &AppendReplyAux{serverID, appendRPCReply}
+		replyChan <- &AppendReplyAux{serverID, callInfo, appendRPCReply}
 	case <-abortChan:
 		//abort call
 	}
 
 }
 
-func (state *ServerState) sendRequestVotes(server *rpc.Client, done chan int, exit chan int, myID int) {
+func (state *ServerState) sendRequestVotes(server *rpc.Client, voteChan chan *RequestVoteResult, electionAbortChan chan int) {
 	vote := &RequestVoteResult{0, false}
 
 	index := len(state.log) - 1
-    
-	reqVoteArgs := &RequestVoteArgs{
+
+	reqVoteArgs := &RequestVoteArgs{ //TODO: this is a pointer... check what's being received on the other side
 		Term:         state.currentTerm,
 		CandidateID:  state.id,
 		LastLogIndex: index,
-		LastLogterm:  state.log[index].term}
-    
+		LastLogterm:  state.log[index].Term}
+
 	rpcCall := server.Go("ServerState.RequestVote", reqVoteArgs, vote, nil) // TODO: correct the call parameters
 	fmt.Println("request sent")
 	select {
 	case err := <-rpcCall.Done:
+		fmt.Println("request response received")
 		if err != nil {
-		    fmt.Println(err)
+			fmt.Println(err)
 		}
-		state.mux.Lock()
-		if state.curState == CANDIDATE {
-		    if vote.VoteGranted {
-			    done <- 1
-		    }
-
-		    state.currentTerm = vote.Term
-		}
-		state.mux.Unlock()
-	case <-exit:
-		fmt.Println("request exit chan")
+		voteChan <- vote
+	case <-electionAbortChan:
+		fmt.Println("request aborted")
 		//leave select
 	}
-	fmt.Println("request finished")
 }
