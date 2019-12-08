@@ -62,26 +62,15 @@ func (state *ServerState) ServerMainLoop() {
 
 			//The server MUST NOT become a follower without having resetted it's timer
 			//Timer resets for followers happen upon receiving RPCs for which they can reply with TRUE
-			<-state.timer.C // Timer expired
+			<-state.timeoutChan // Timer expired
 			fmt.Println(state.id, ": timer expired")
-			//TODO: the spec expects timeouts to trigger state changes.
-			//These changes should happen atomically. That means once the timer runs out
-			//no reads or writes can be done on the state until the changes take place.
-			//This implementation does not allow replies to RPCs while timedout, but
-			//this does not seem to be what's expected in the protocol. It's probably
-			//the right way to let state variables alone decide on what the replies should be.
-			//But then again, shouldn't RPCs stop the timer?
-
-			state.mux.Lock()
-			state.curState = CANDIDATE // Convert to candidate
-			state.currentTerm++
-			state.mux.Unlock()
+			//Timeout triggered state changes atomically in function TimeoutManager().
 
 		//========================================
 		// Cadidate routine
 		//========================================
 		case CANDIDATE:
-			fmt.Println("server ", state.id, "is now a cadidate")
+			fmt.Println("server ", state.id, "is now a cadidate in term", state.currentTerm)
 			state.votedFor = state.id
 			rcvdVotes := 1
 
@@ -94,22 +83,20 @@ func (state *ServerState) ServerMainLoop() {
 					go state.sendRequestVotes(server, voteChan, electionAbortChan)
 				}
 			}
+
+			state.ResetStateTimer() //Maybe do this somewhere else??
+
 			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-			state.timer.Reset(Timer.GenRandom())
 			voteRequestsPending := nOfServers - 1
 			electionStillGoing := true
 			//Receive votes
-			for electionStillGoing {
+			for state.IsCandidate() && electionStillGoing { //TODO: include default to terminate ongoing election when no longer candidate?
 				select {
-				case <-state.timer.C:
-					//Election timed out. Stop waiting for responses. Start new election
-					state.mux.Lock()
-					if state.IsCandidate() { //Check just in case it might have become a follower in the meantime
-						state.currentTerm++
-						state.votedFor = -1
-					}
-					state.mux.Unlock()
+				case <-state.timeoutChan:
+					//Election timed out.
+					//State transitions triggered by timouts are handled by the TimeoutManager() fucntion.
+					//Stop waiting for responses. Start new election.
 					electionStillGoing = false
 
 				case vote := <-voteChan:
@@ -119,13 +106,22 @@ func (state *ServerState) ServerMainLoop() {
 						fmt.Println("Received votes: ", rcvdVotes)
 					}
 					state.mux.Lock()
-					if state.IsCandidate() && rcvdVotes >= majority {
+					if rcvdVotes >= majority {
+						//No need to check if still a candidate. No 2 leaders are elected in the same term
+						//Even if the votes are late and a new leader has already been elected, that new leader
+						//Would have to be of a higher term and the system would still be safe.
+
 						//THIS SERVER WAS ELECTED LEADER
 						state.curState = LEADER
+						state.timer.Stop()
+						//TODO: maybe do the whole "check if actually stopped" thing here too?
+						//No need if TimeoutTransition() accounts for the leader case.
 						electionStillGoing = false
 					}
 					state.mux.Unlock()
 
+				default:
+					//Go through loop check again to see if still a candidate
 				}
 
 			}

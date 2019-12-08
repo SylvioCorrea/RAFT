@@ -109,34 +109,43 @@ func (state *ServerState) IsLeader() bool {
 //StartTimeoutManager handles the timeout of the state timer. It signals timeouts by writing on the timeoutChan
 //No thread should check for timeouts directly on the timer. They should read from timeoutChan instead.
 //This encapsulation is justified by the fact that timeouts can occur during RPC processing just before
-//Stop() is called on the timer. If this happens and the RPC should have stopped the timer (it's
-//an RPC from a server in a higher term), then the timeout is considered to never have
-//ocurred in the first place. The RPC response function should signal this by changing shouldIgnoreTimeout
-//to true.
+//Stop() is called on the timer. If this happens and the RPC should have stopped the timer,
+//then the timeout is considered to never have ocurred in the first place.
+//The RPC function should signal this by changing shouldIgnoreTimeout to true.
 func (state *ServerState) StartTimeoutManager() {
 	go func() {
 		for {
 			<-state.timer.C //Timer fired timeout
-			state.mux.Lock()
+
+			state.mux.Lock() //!!!!!!!!!!!!!!!!!!!!
+
 			if state.shouldIgnoreTimeout {
 				state.shouldIgnoreTimeout = false
 			} else {
 				state.TimeoutStateTransition()
 				state.timeoutChan <- 1
 			}
-			state.mux.Unlock()
+
+			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!
 		}
 	}()
 }
 
 //TimeoutStateTransition should be called while state is locked once a timeout has ocurred.
 func (state *ServerState) TimeoutStateTransition() {
+
 	if state.IsFollower() {
 		state.curState = CANDIDATE
+		state.votedFor = -1
+		state.currentTerm++
+	} else if state.IsCandidate() {
+		//Candidates who timeout keep being candidates
+		state.votedFor = -1
+		state.currentTerm++
+	} else if state.IsLeader() {
+		fmt.Println("WARNING: timedout as a leader")
+		//Leaders should not timeout
 	}
-	//Candidates who timeout keep being candidates
-	//Leaders do not timeout
-	state.currentTerm++ //timeouts always increase the term
 }
 
 //ResetStateTimer resets the timer for follower and candidate states

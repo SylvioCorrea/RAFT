@@ -6,8 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
-
-	"./Timer"
 )
 
 //==============================================================================
@@ -70,7 +68,6 @@ type RequestVoteArgs struct {
 	LastLogterm  int
 }
 
-//TODO: MAKE FIELDS PUBLIC
 type AppendEntriesResult struct {
 	Term    int
 	Success bool
@@ -97,24 +94,25 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestV
 
 	// 1. Reply false if term < currentTerm
 	if candidate.Term < state.currentTerm {
-		vote.VoteGranted = false
 		fmt.Println("RequestVoteRPC: FALSE -- candidate has lower term")
 		// 2. If votedFor is null or candidateID, and candidate is up to date, grant vote
 
 	} else if isUpToDate(state, candidate) {
 		if state.CanGrantVote(candidate) {
-			//One final test remains. The server will only grant the vote if it hasn't timed out in the meantime.
-			if state.timer.Stop() {
-				state.votedFor = candidate.CandidateID
-				fmt.Println("RequestVoteRPC: TRUE --  vote granted for ", state.votedFor)
-				state.currentTerm = candidate.Term
-				vote.VoteGranted = true
-				state.curState = FOLLOWER
-				state.timer.Reset(Timer.GenRandom())
-			} else {
-				fmt.Println("RequestVoteRPC: FALSE -- timed out")
-				//No need to drain the channel. The state machine is expecting it's signal.
+			//Ignore timer timeout that hapenned during RPC processing if this receive should have stopped the timer.
+			if !state.timer.Stop() { //Timer fired timeout
+				//No need to drain the timer channel since the timeout signal is received by the FOLLOWER routine
+				fmt.Println("RequestVoteRPC: Timed out during RPC processing!")
+				state.shouldIgnoreTimeout = true
 			}
+
+			state.votedFor = candidate.CandidateID
+			fmt.Println("RequestVoteRPC: TRUE -- vote granted for ", state.votedFor)
+			state.currentTerm = candidate.Term
+			vote.VoteGranted = true
+			state.curState = FOLLOWER
+			state.ResetStateTimer()
+
 		} else {
 			fmt.Println("RequestVoteRPC: FALSE -- voteFor not nil or not currently chosen candidate.")
 		}
@@ -132,35 +130,35 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestV
 	return nil
 }
 
+//AppendEntry function is structured in a way that checks cases where te reply should be false and returns
+//immediately if any of them are true. Function logic is explained in the comments.
 func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntriesResult) error {
 	fmt.Println("AppendEntriesRPC: received")
 	state.mux.Lock()
 	defer state.mux.Unlock() //Will be called once function returns
 	fmt.Println("AppendEntriesRPC: locked.")
 
+	//Write standard negative reply.
 	rep.Term = state.currentTerm
 	rep.Success = false
 
-	fmt.Println("AppendEntriesRPC: check 1.")
+	fmt.Println("AppendEntriesRPC: check term.")
 	// 1.  Reply false if term < currentTerm
 	if args.Term < state.currentTerm {
 		fmt.Println("AppendEntriesRPC: FALSE. Leader's term is outdated")
 		return nil
 	}
 
+	//Caller is on the same or higher term. Either way, this server should be on the same term from now on.
+	state.currentTerm = args.Term
+	rep.Term = state.currentTerm
+
 	//At this point, if this server isn't already a follower it must become one, because the caller must
-	//have been elected by the majority before sending AppendEntries calls
+	//have been elected by the majority before sending AppendEntries calls and it's either this term's leader
+	//or has a higher term.
 	state.curState = FOLLOWER
 
-	fmt.Println("AppendEntriesRPC: check 2.")
-	if !state.timer.Stop() { //Timeout ocurred just before receiving
-		//No need to drain the timer channel since the timeout signal is received by the FOLLOWER routine
-		fmt.Println("AppendEntriesRPC: FALSE. Timed out before receiving")
-		return nil
-	}
-	//Stop successful
-
-	fmt.Println("AppendEntriesRPC: check 3.")
+	fmt.Println("AppendEntriesRPC: check log.")
 	lastLogIndex := len(state.log) - 1
 	// 2.  Reply false if log doesn’t contain an entry at prevLogIndex ...
 	if lastLogIndex < args.PrevLogIndex {
@@ -171,10 +169,13 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 	if state.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		fmt.Println("AppendEntriesRPC: FALSE. Entry at prevLogIndex has different term.")
 		return nil
-
 	}
 
-	if len(args.Entries) > 0 { //Not just a heartbeat
+	//Whatever the case from now on, this RPC should reply true.
+	rep.Success = true
+
+	if len(args.Entries) > 0 {
+		//Not just a heartbeat
 		//Append all new entries overwriting outdated ones
 		state.log = append(state.log[:args.PrevLogIndex+1], args.Entries...)
 
@@ -186,18 +187,21 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 				state.commitIndex = args.LeaderCommit
 			}
 		}
-		state.currentTerm = rep.Term
-		state.curState = FOLLOWER // When receiving AppendEntries -> convert to follower
-		rep.Success = true
+
+		//Ignore timer timeout that hapenned during RPC processing if this receive should have stopped the timer.
+		if !state.timer.Stop() { //Timer fired timeout
+			//No need to drain the timer channel since the timeout signal is received by the FOLLOWER routine
+			fmt.Println("AppendEntriesRPC: Timed out during RPC processing!")
+			state.shouldIgnoreTimeout = true
+		}
+
 		fmt.Println("AppendEntriesRPC: TRUE. Log replicated.")
-		state.timer.Reset(Timer.GenRandom())
-		return nil
+	} else {
+		//Just a heartbeat
+		fmt.Println("AppendEntriesRPC: TRUE. Heartbeat reply.")
 	}
 
-	//Just a heartbeat
-	rep.Success = true
-	fmt.Println("AppendEntriesRPC: TRUE. Heartbeat reply.")
-	state.timer.Reset(Timer.GenRandom())
+	state.ResetStateTimer()
 	return nil
 }
 
@@ -220,7 +224,7 @@ func isUpToDate(state *ServerState, candidate *RequestVoteArgs) bool {
 		len(state.log)-1 <= candidate.LastLogIndex
 }
 
-/* If the candidate is up-to-date, it will receive a vote as long as these conditions are met.
+/* CanGrantVote: If the candidate is up-to-date, it will receive a vote as long as these conditions are met.
    A reasonable implementation would avoid being so verbose, but this one is supposed
    to be understandable, not fast. */
 func (state *ServerState) CanGrantVote(candidate *RequestVoteArgs) bool {
