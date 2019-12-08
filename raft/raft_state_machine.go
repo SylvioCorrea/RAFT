@@ -64,8 +64,18 @@ func (state *ServerState) ServerMainLoop() {
 			//Timer resets for followers happen upon receiving RPCs for which they can reply with TRUE
 			<-state.timer.C // Timer expired
 			fmt.Println(state.id, ": timer expired")
+			//TODO: the spec expects timeouts to trigger state changes.
+			//These changes should happen atomically. That means once the timer runs out
+			//no reads or writes can be done on the state until the changes take place.
+			//This implementation does not allow replies to RPCs while timedout, but
+			//this does not seem to be what's expected in the protocol. It's probably
+			//the right way to let state variables alone decide on what the replies should be.
+			//But then again, shouldn't RPCs stop the timer?
 
+			state.mux.Lock()
 			state.curState = CANDIDATE // Convert to candidate
+			state.currentTerm++
+			state.mux.Unlock()
 
 		//========================================
 		// Cadidate routine
@@ -95,7 +105,7 @@ func (state *ServerState) ServerMainLoop() {
 				case <-state.timer.C:
 					//Election timed out. Stop waiting for responses. Start new election
 					state.mux.Lock()
-					if state.curState == CANDIDATE { //Check just in case it might have become a follower in the meantime
+					if state.IsCandidate() { //Check just in case it might have become a follower in the meantime
 						state.currentTerm++
 						state.votedFor = -1
 					}
@@ -215,8 +225,13 @@ func (state *ServerState) ServerMainLoop() {
 						fmt.Println("AppendEntries reply: server", replyAux.serverID, "replied TRUE.")
 						state.nextIndex[replyAux.serverID] = len(state.log)
 						state.matchIndex[replyAux.serverID] = len(state.log) - 1
+					} else if replyAux.reply.Term > state.currentTerm {
+						fmt.Println("AppendEntries reply: server", replyAux.serverID, "replied FALSE. Reason: it is at a higher term.")
+						//TODO become follower once a server with higher term is discovered
+						//This might break the network if the server responding cannot
+						//receive RPC calls from the other servers, only send them?
 					} else {
-						fmt.Println("AppendEntries reply: server", replyAux.serverID, "replied FALSE.")
+						fmt.Println("AppendEntries reply: server", replyAux.serverID, "replied FALSE. Reason: log entries do not match.")
 						state.nextIndex[replyAux.serverID]--
 					}
 					remainingCalls--
@@ -262,10 +277,10 @@ func (state *ServerState) sendRequestVotes(server *rpc.Client, voteChan chan *Re
 	rpcCall := server.Go("ServerState.RequestVote", reqVoteArgs, vote, nil) // TODO: correct the call parameters
 	fmt.Println("request sent")
 	select {
-	case err := <-rpcCall.Done:
+	case callInfo := <-rpcCall.Done:
 		fmt.Println("request response received")
-		if err != nil {
-			fmt.Println(err)
+		if callInfo.Error != nil {
+			fmt.Println(callInfo.Error)
 		}
 		voteChan <- vote
 	case <-electionAbortChan:

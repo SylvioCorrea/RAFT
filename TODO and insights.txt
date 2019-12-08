@@ -1,0 +1,56 @@
+PROBLEMA: ao receber retorno falso de um appendentries, o lider aumenta o nextIndex do servidor SEMPRE. Isso NÃO deve acontecer. Deve ocorrer somente em casos em que o retorno falso é motivado pelo log inconsistente do servidor que respondeu. Nem sempre é o caso, pode ser que o retorno tenha sido falso em razão de o lider estar com termo atrasado.
+RESOLVIDO: O lider não mais decrementa nextIndex para o caso.
+
+PROBLEMA: quando o lider recebe um retorno falso de appendentries em razão de o lider estar com termo atrasado, parece que ele deve se tornar um follower automaticamente.
+
+
+Até agora, a implementação retornava falso quando, ao receber uma chamada RPC, sofria timeout durante o processamento dessa chamada.
+Problema 1: nada na especificação diz que timeout é motivo de retorno falso. De fato, não é. Um servidor NÃO PODE retornar falso por motivo de timeout, porque o restante do protocolo não prevê o tratamento deste motivo.
+Problema 2: ao retornar falso, o servidor precisa enviar o seu termo atual para quem chamou a RPC. Se ocorreu o timeout, esse termo mudou. Note-se que esta informação é de extrema importância para quem chamou.
+
+Ex:
+    s1 é follower. Termo: 1, log: [ (termo 1, valor 1) ]
+    s2 é leader.   Termo: 2, log: [ (termo 1, valor 1) ]
+    
+    1. s2 manda AppendEntries.
+    2. s1 recebe.
+    3. Timer de s2 estoura durante o processamento da RPC.
+    4. s2 tenta parar o timer e recebe falso.
+    5. s2 pode considerar que o timeout incrementou seu termo para 2 ou que a resposta a ser enviada ocorreu ainda no termo que acaba de se exaurir. Não importa.
+    5. s2 retorna o AppendEntries de s1 com resposta (term: 1 ou 2, success: false)
+    6. De acordo com o protocolo, s1 deve decrementar o nextIndex[s2]. Este valor agora é 0.
+    7. O próximo AppendEntries enviado por s1 deve enviar o termo da entrada de índice -1 em seu log, causando erro de index out of bounds.
+
+
+Algumas RPCs devem parar o timer, outras não.
+
+1. RPC é recebido
+2. Termo é amostrado: ok, chamada feita por um termo maior ou igual. Deve ser recebida. Hora de parar o timer.
+3. Timer estoura nesse meio tempo.
+4. Função de recepção de RPCs, só então, tenta parar o timer. Stop() retorna falso porque o timer estourou. Isto significa que o servidor que está respondendo este RPC acaba de trocar de termo e a checagem de termo feita há pouco está, agora, defasada
+5. O que deveria acontecer?
+    5.1. Se o termo de quem chamou é agora inferior, a RPC deve retornar falso. Este é um caso simples.
+    
+    5.2 Pode ser que o termo de quem chamou continua igual ou maior do que o termo do respondente. Neste caso, mesmo tendo ocorrido o timeout o servidor deve responder a chamada e reiniciar seu timer (caso seja um append entries, ou caso seja um follower recebendo requestvote de um servidor para o qual ele responde afirmativamente).
+    
+    PROBLEMA: Outras threads estão esperando receber o sinal do timer estourado. Se Stop() retornou falso, estas threads receberam o sinal do canal interno do timer.
+    
+    SOLUÇÃO: Considera-se que timeouts não podem ocorrer durante o tratamento de uma RPC que retorna true. Encapsular o timeout em uma função (TimeoutManager()) que fica permanentemente esperando o recebimento do sinal do canal do timer. Threads que esperam o sinal de timeout não devem acessar diretamente o o canal do timer. Em vez disso, devem esperar que o sinal venha de um CANAL PRÓPRIO no qual esta função escreverá. Ocorrendo o timeout, a função tentará obter o lock do estado. Se uma RPC estiver sendo tratada, a função será bloqueada. Se uma RPC tentar parar o timer e obter falso, deve indicar em um booleano que isto ocorreu. Este booleano será lido pela função que cuida do timeout para decidir se deve ou não mandar o sinal de timeout do timer para quem o esteja esperando. Se a variável indica que o timeout ocorreu no interim do tratamento de uma rpc que deveria retornar true, TimeoutManager() não irá escrever no canal de timeout. Do contrário, irá escrever.
+    
+    CUIDADO: um lider pode receber RPCs. Seu timer está parado sempre, logo pedir Stop() sempre irá retornar falso, mas um lider NÃO DEVE MARCAR A VARIÁVEL COMO VERDADEIRA, pois ela só será marcada como falsa novamente na ocorrência de um timeout, fazendo com que o proximo timeout, se ocorrer, seja ignorado pelo sistema.
+    
+    func (state *ServerState) TimeoutManager() { //Deve ser chamada com go no inicio da execução
+        for {
+            <- state.timer.C //Esperando o estouro do timer
+            state.mux.Lock() //Se alguma rpc esta sendo tratada, bloqueará aqui
+            
+            if shouldIgnoreTimeout { //se estava tratando de rpcs para as quais retornou true:
+                //não envia o sinal de timeout, é como se ele nunca tivesse ocorrido
+                shouldIgnoreTimeout = false
+            } else {
+                timeoutChan <- 1 //timeoutChan deve ser um canal de tamnho 1 para evitar travar aqui
+            }
+            
+            state.mux.Unlock()
+        }
+    }
