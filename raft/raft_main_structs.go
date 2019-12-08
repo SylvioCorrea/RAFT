@@ -113,6 +113,7 @@ func (state *ServerState) IsLeader() bool {
 //then the timeout is considered to never have ocurred in the first place.
 //The RPC function should signal this by changing shouldIgnoreTimeout to true.
 func (state *ServerState) StartTimeoutManager() {
+	fmt.Println("Timeout Manager start.")
 	go func() {
 		for {
 			<-state.timer.C //Timer fired timeout

@@ -30,10 +30,6 @@ func (state *ServerState) ServerMainLoop() {
 	clientConnections = state.SetupRPCClients()
 	fmt.Println("All RPC client connections dialed for", state.id)
 
-	//Election uses it's own timer
-	electionTimer := time.NewTimer(0)
-	<-electionTimer.C //Empty the channel
-
 	//Candidate auxiliary channels
 	var voteChan chan *RequestVoteResult
 	var electionAbortChan chan int
@@ -43,8 +39,9 @@ func (state *ServerState) ServerMainLoop() {
 	var abortChan chan int
 
 	//All servers start as followers
+	state.StartTimeoutManager()
 	state.curState = FOLLOWER
-	state.timer.Reset(Timer.GenRandom())
+	state.ResetStateTimer()
 	fmt.Println("TIMER start.")
 	state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
