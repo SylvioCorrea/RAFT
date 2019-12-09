@@ -3,6 +3,7 @@ package raft
 import (
 	"fmt"
 	"math/rand"
+	"net/rpc"
 	"sync"
 	"time"
 )
@@ -10,8 +11,8 @@ import (
 //==============================================================================
 // Global values known to every server
 //==============================================================================
-//State enum
 const (
+	//State enum
 	LEADER = iota
 	FOLLOWER
 	CANDIDATE
@@ -52,19 +53,22 @@ type ServerState struct {
 	mux                 sync.Mutex
 	timeoutChan         chan int
 	shouldIgnoreTimeout bool
+	clientConnections   []*rpc.Client
 
-	// Persistent
+	// Persistent*
 	currentTerm int
 	votedFor    int //Should start as -1 since int cannot be nil
 	log         []LogEntry
 
-	// Volatile on all
+	// Volatile on all*
 	commitIndex int
 	lastApplied int
 
-	// Volatile on leader
+	// Volatile on leader*
 	nextIndex  []int
 	matchIndex []int
+
+	//*TODO: Persistency is not currently supported
 }
 
 //Convenience for building ServerState object
@@ -77,6 +81,7 @@ func ServerStateInit(id int) *ServerState {
 		mux:                 sync.Mutex{},
 		timeoutChan:         make(chan int, 1),
 		shouldIgnoreTimeout: false,
+		clientConnections:   make([]*rpc.Client, nOfServers),
 		currentTerm:         0,
 		votedFor:            -1, //nil
 		log:                 make([]LogEntry, 1),
@@ -154,4 +159,12 @@ func (state *ServerState) ResetStateTimer() {
 	t := time.Duration(MINTIME+rand.Intn(TIMERANGE)) * TIMESCALE
 	fmt.Println(t)
 	state.timer.Reset(t)
+}
+
+func (state *ServerState) PrintLog() {
+	fmt.Print("Log: [")
+	for i, le := range state.log {
+		fmt.Printf(" %d:{t:%d v:%d}", i, le.Term, le.Value)
+	}
+	fmt.Print("]\n")
 }

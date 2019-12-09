@@ -28,29 +28,31 @@ func (state *ServerState) SetupRPCServer() {
 	fmt.Println("Waiting calls.")
 }
 
-//Setup all rpc client connections and return them in a slice of pointers
-func (state *ServerState) SetupRPCClients() []*rpc.Client {
-	clientConnections := make([]*rpc.Client, len(serverPorts))
-
-	for i := 0; i < len(clientConnections); i++ {
-		client, err := rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[i])
-
-		for err != nil { //If dial failed, try again until it succeeds. All servers are expected work on start
-			fmt.Println("dialing: error")
-			fmt.Println("Trying again.")
-			client, err = rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[i])
+//SetupRPCClients dials every other server and stores the client connections in the proper slice.
+func (state *ServerState) SetupRPCClients() {
+	for i, client := range state.clientConnections {
+		if i != state.id && client == nil {
+			go state.DialServer(i) //TODO: maybe this is a bad idea
 		}
+	}
+}
 
-		clientConnections[i] = client //store client on slice
+//DialServer repeatedly attempts to establish a client connection with a server until it succeeds
+func (state *ServerState) DialServer(serverID int) {
+	client, err := rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[serverID])
+
+	for err != nil { //If dial failed, try again until it succeeds. All servers are expected work on start
+		fmt.Println("dialing: error. Trying again.")
+		client, err = rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[serverID])
 	}
 
-	return clientConnections
+	state.clientConnections[serverID] = client
 }
 
 //==============================================================================
 // Structs for RPCs
 //==============================================================================
-// AppendEntry parameters
+// AppendEntriesArgs AppendEntry RPC parameters
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderID     int
@@ -60,7 +62,7 @@ type AppendEntriesArgs struct {
 	LeaderCommit int
 }
 
-// RequestVote parameters
+// RequestVoteArgs RequestVote RPC parameters
 type RequestVoteArgs struct {
 	Term         int
 	CandidateID  int
@@ -68,11 +70,13 @@ type RequestVoteArgs struct {
 	LastLogterm  int
 }
 
+// AppendEntriesResult AppendEntries RPC reply
 type AppendEntriesResult struct {
 	Term    int
 	Success bool
 }
 
+// RequestVoteResult RequestVote RPC reply
 type RequestVoteResult struct {
 	Term        int
 	VoteGranted bool
@@ -168,6 +172,8 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 	// ... whose term matches prevLogTerm
 	if state.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		fmt.Println("AppendEntriesRPC: FALSE. Entry at prevLogIndex has different term.")
+		fmt.Printf("PrevLogindex: %d PrevLogTerm: %d\n", args.PrevLogIndex, args.PrevLogTerm)
+
 		return nil
 	}
 
@@ -196,12 +202,68 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 		}
 
 		fmt.Println("AppendEntriesRPC: TRUE. Log replicated.")
+		state.PrintLog()
 	} else {
 		//Just a heartbeat
 		fmt.Println("AppendEntriesRPC: TRUE. Heartbeat reply.")
+		state.PrintLog()
 	}
 
 	state.ResetStateTimer()
+	return nil
+}
+
+//RequestJoin is called by servers on startup. It is used by the caller to signal other servers that it
+//is ready to serve RPC requests. The true purpose of this RPC is to allow crashed servers to
+//rejoin the system.
+//When a server crashes, all client connections with it held by other servers get cut out.
+//This means that if the crashed server recovers, other servers won't be able
+//to call its RPCs unless they dial again. Receiving RequestJoin will prompt other servers to
+//reestablish client connections with the caller.
+//Returns true if the receiver successfully establishes a client connection with the caller.
+func (state *ServerState) RequestJoin(serverID int, connectionEstablished bool) error {
+	fmt.Println("RequestJoinRPC: received. Called by", serverID)
+
+	//Check if this server has a client connection with caller
+	if state.clientConnections[serverID] != nil {
+		//TODO: avoid blocking here: make call assynchronous? timeout?
+		n := 0
+		ok := false
+		callErr := state.clientConnections[serverID].Call("ServerState.ConnectionPulse", &n, &ok)
+
+		//TODO: what if the error does not mean the connection is dead (other errors)?
+		if callErr != nil { //Connection is dead. Close it and create another one
+			fmt.Println("Client connection with", serverID, "is busted. Dialing again.")
+			fmt.Println(callErr)
+			closeErr := state.clientConnections[serverID].Close()
+			if closeErr != nil {
+				fmt.Println(closeErr)
+			}
+
+			//Dial another connection
+			state.DialServer(serverID)
+			fmt.Println("Client connection with", serverID, "reestablished.")
+
+		} else {
+			fmt.Println("Client connection with", serverID, "ok.")
+		}
+
+	} else {
+		fmt.Println("Client connection with", serverID, "being established for the first time.")
+		state.DialServer(serverID)
+	}
+
+	return nil
+}
+
+//ConnectionPulse is an RPC used by the caller to check if it's RPC client connection
+//with the receiver is working properly, that is, if the connection returns any errors.
+//If the receiver is able to receive the call at all, it returns true.
+//This function is called from inside RequestJoin().
+//Surely there must be a more sensible way to check the pulse of client connections,
+//but this will do for now.
+func (state *ServerState) ConnectionPulse(unusedArgs *int, ok *bool) error {
+	*ok = true
 	return nil
 }
 
