@@ -24,7 +24,9 @@ func main() {
 	serverID, err := strconv.Atoi(os.Args[1])
 	errorCheck(err)
 
-	server := raft.ServerStateInit(serverID)
+	networkNodes := raft.GetNetworkFromFile("network.txt")
+
+	server := raft.ServerStateInit(serverID, networkNodes)
 
 	server.ServerMainLoop()
 }

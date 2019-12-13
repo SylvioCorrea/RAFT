@@ -5,8 +5,6 @@ import (
 	"math/rand"
 	"net/rpc"
 	"time"
-
-	"./Timer"
 )
 
 //Struct used during leader processing of AppendEntries replies
@@ -22,12 +20,12 @@ func (state *ServerState) ServerMainLoop() {
 	//Lock to avoid processing RPCs during initial setup
 	state.mux.Lock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 	//Register own rpc server
-	go state.SetupRPCServer()
-	fmt.Println("RPC services registered for ", state.id)
+	fmt.Println("Registering RPC server.")
+	state.SetupRPCServer()
 
 	//Get all client connections to send rpc calls to the other servers
+	fmt.Println("Establishing RPC client connections with the other servers.")
 	state.SetupRPCClients()
-	fmt.Println("All RPC client connections established.")
 
 	//Candidate auxiliary channels
 	var voteChan chan *RequestVoteResult
@@ -70,8 +68,8 @@ func (state *ServerState) ServerMainLoop() {
 			state.votedFor = state.id
 			rcvdVotes := 1
 
-			voteChan = make(chan *RequestVoteResult, nOfServers-1)
-			electionAbortChan = make(chan int, nOfServers-1)
+			voteChan = make(chan *RequestVoteResult, state.nOfServers-1)
+			electionAbortChan = make(chan int, state.nOfServers-1)
 			voteRequestsPending := 0
 			//Request votes
 			for i, server := range state.clientConnections {
@@ -102,7 +100,7 @@ func (state *ServerState) ServerMainLoop() {
 						fmt.Println("Received votes: ", rcvdVotes)
 					}
 					state.mux.Lock()
-					if rcvdVotes >= majority {
+					if rcvdVotes >= state.majority {
 						//No need to check if still a candidate. No 2 leaders are elected in the same term
 						//Even if the votes are late and a new leader has already been elected, that new leader
 						//Would have to be of a higher term and the system would still be safe.
@@ -136,14 +134,13 @@ func (state *ServerState) ServerMainLoop() {
 			fmt.Println("=====> server ", state.id, "is now a leader! term(", state.currentTerm, ") <=======")
 
 			//Updates lastIndex and matchIndex for all servers
-			nOfServers := len(serverPorts)
-			for i := 0; i < nOfServers; i++ {
+			for i := 0; i < state.nOfServers; i++ {
 				state.nextIndex[i] = len(state.log)
 				state.matchIndex[i] = 0
 			}
 
 			//Channel to abort rpc call threads
-			abortChan = make(chan int, nOfServers-1)
+			abortChan = make(chan int, state.nOfServers-1)
 			//Channel to pass rpc replies
 			replyChan = make(chan *AppendReplyAux) //Receive replies from rpcs ONE AT A TIME extra carefully
 			remainingCalls := 0
@@ -165,7 +162,7 @@ func (state *ServerState) ServerMainLoop() {
 			fmt.Println("Initial AppendEntries sent.")
 			state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-			leaderTimer := time.NewTimer(Timer.LeaderTimer()) //Leader will wait on this timer to send new AppendEntries
+			leaderTimer := time.NewTimer(LEADERTIMER * TIMESCALE) //Leader will wait on this timer to send new AppendEntries
 
 			for state.curState == LEADER { //Start leader loop
 				select {
@@ -177,7 +174,7 @@ func (state *ServerState) ServerMainLoop() {
 					remainingCalls = 0
 
 					//Make new abort and reply channels
-					abortChan = make(chan int, nOfServers-1)
+					abortChan = make(chan int, state.nOfServers-1)
 					replyChan = make(chan *AppendReplyAux)
 
 					//Artificially generate a new LogEntry for the purpose of testing
@@ -209,7 +206,7 @@ func (state *ServerState) ServerMainLoop() {
 					fmt.Println("AppendEntries sent.")
 					state.mux.Unlock() //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 					//Reset timer
-					leaderTimer.Reset(Timer.LeaderTimer())
+					leaderTimer.Reset(LEADERTIMER * TIMESCALE)
 
 				case replyAux := <-replyChan: //Some server replied to the Append
 					remainingCalls--

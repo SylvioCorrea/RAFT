@@ -16,7 +16,7 @@ func (state *ServerState) SetupRPCServer() {
 	rpc.Register(state)
 
 	rpc.HandleHTTP()
-	port := serverPorts[state.id]
+	port := state.network[state.id].Port
 	l, e := net.Listen("tcp", port)
 	if e != nil {
 		log.Fatal("listen error:", e)
@@ -39,11 +39,12 @@ func (state *ServerState) SetupRPCClients() {
 
 //DialServer repeatedly attempts to establish a client connection with a server until it succeeds
 func (state *ServerState) DialServer(serverID int) {
-	client, err := rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[serverID])
+	address := state.network[serverID].IP + state.network[serverID].Port
+	client, err := rpc.DialHTTP("tcp", address)
 
 	for err != nil { //If dial failed, try again until it succeeds. All servers are expected work on start
 		fmt.Println("dialing: error. Trying again.")
-		client, err = rpc.DialHTTP("tcp", "127.0.0.1"+serverPorts[serverID])
+		client, err = rpc.DialHTTP("tcp", address)
 	}
 
 	state.clientConnections[serverID] = client
@@ -52,6 +53,7 @@ func (state *ServerState) DialServer(serverID int) {
 //==============================================================================
 // Structs for RPCs
 //==============================================================================
+
 // AppendEntriesArgs AppendEntry RPC parameters
 type AppendEntriesArgs struct {
 	Term         int
@@ -104,7 +106,9 @@ func (state *ServerState) RequestVote(candidate *RequestVoteArgs, vote *RequestV
 	} else if isUpToDate(state, candidate) {
 		if state.CanGrantVote(candidate) {
 			//Ignore timer timeout that hapenned during RPC processing if this receive should have stopped the timer.
-			if !state.timer.Stop() { //Timer fired timeout
+			//Only ignore the timeout if the server is not the leader, otherwise Stop() will always return false,
+			//since it's timer isn't running.
+			if !state.timer.Stop() && !state.IsLeader() { //Timer fired timeout
 				//No need to drain the timer channel since the timeout signal is received by the FOLLOWER routine
 				fmt.Println("RequestVoteRPC: Timed out during RPC processing!")
 				state.shouldIgnoreTimeout = true
@@ -195,7 +199,9 @@ func (state *ServerState) AppendEntry(args *AppendEntriesArgs, rep *AppendEntrie
 		}
 
 		//Ignore timer timeout that hapenned during RPC processing if this receive should have stopped the timer.
-		if !state.timer.Stop() { //Timer fired timeout
+		//Only ignore the timeout if the server is not the leader, otherwise Stop() will always return false,
+		//since it's timer isn't running.
+		if !state.timer.Stop() && !state.IsLeader() { //Timer fired timeout
 			//No need to drain the timer channel since the timeout signal is received by the FOLLOWER routine
 			fmt.Println("AppendEntriesRPC: Timed out during RPC processing!")
 			state.shouldIgnoreTimeout = true
@@ -290,7 +296,7 @@ func isUpToDate(state *ServerState, candidate *RequestVoteArgs) bool {
    A reasonable implementation would avoid being so verbose, but this one is supposed
    to be understandable, not fast. */
 func (state *ServerState) CanGrantVote(candidate *RequestVoteArgs) bool {
-	hasNotVotedYet := state.votedFor == -1
+	hasNotVotedYet := state.votedFor == -1 //No vote cast for this turn yet
 	votedForCandidate := state.votedFor == candidate.CandidateID
 	candidateHasHigherTerm := candidate.Term > state.currentTerm
 	return hasNotVotedYet || votedForCandidate || candidateHasHigherTerm

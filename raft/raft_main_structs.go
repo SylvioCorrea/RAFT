@@ -2,8 +2,10 @@ package raft
 
 import (
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"net/rpc"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,21 +25,18 @@ const (
 	TIMESCALE   = time.Millisecond
 )
 
-//Ports for all servers. Server ports and addresses are static and known to all.
-//In this case, all servers are expected to work on loopback.
-var serverPorts = []string{
-	":8000",
-	":8001",
-	":8002"}
-
-var nOfServers int = len(serverPorts)
-var majority int = len(serverPorts)/2 + 1
-
 //==============================================================================
 
 //==============================================================================
 // Server Structs
 //==============================================================================
+
+// NetworkNode describes participating server addresses and listening ports
+type NetworkNode struct {
+	IP   string
+	Port string
+}
+
 // Log Entry (appended $VALUE at $TERM)
 type LogEntry struct {
 	Term  int
@@ -46,14 +45,19 @@ type LogEntry struct {
 
 // ServerState holds all relevant variables for servers
 type ServerState struct {
-	//Extras (not in figure 2)
+	//======================================
+	//Extras (not in figure 2 of the paper)
 	id                  int
+	network             []*NetworkNode
+	nOfServers          int
+	majority            int
+	clientConnections   []*rpc.Client
 	timer               *time.Timer
 	curState            int
 	mux                 sync.Mutex
 	timeoutChan         chan int
 	shouldIgnoreTimeout bool
-	clientConnections   []*rpc.Client
+	//======================================
 
 	// Persistent*
 	currentTerm int
@@ -71,24 +75,27 @@ type ServerState struct {
 	//*TODO: Persistency is not currently supported
 }
 
-//Convenience for building ServerState object
-func ServerStateInit(id int) *ServerState {
+//ServerStateInit Convenience for building ServerState object
+func ServerStateInit(id int, networkNodes []*NetworkNode) *ServerState {
 
 	server := &ServerState{
 		id:                  id,
+		network:             networkNodes,
+		nOfServers:          len(networkNodes),
+		majority:            len(networkNodes)/2 + 1,
+		clientConnections:   make([]*rpc.Client, len(networkNodes)),
 		timer:               time.NewTimer(0),
 		curState:            FOLLOWER,
 		mux:                 sync.Mutex{},
 		timeoutChan:         make(chan int, 1),
 		shouldIgnoreTimeout: false,
-		clientConnections:   make([]*rpc.Client, nOfServers),
 		currentTerm:         0,
 		votedFor:            -1, //nil
 		log:                 make([]LogEntry, 1),
 		commitIndex:         0,
 		lastApplied:         0,
-		nextIndex:           make([]int, nOfServers),
-		matchIndex:          make([]int, nOfServers)}
+		nextIndex:           make([]int, len(networkNodes)),
+		matchIndex:          make([]int, len(networkNodes))}
 
 	//Timers should be emptied before resets. Even timers initialized with zero aren't empty.
 	<-server.timer.C
@@ -167,4 +174,31 @@ func (state *ServerState) PrintLog() {
 		fmt.Printf(" %d:{t:%d v:%d}", i, le.Term, le.Value)
 	}
 	fmt.Print("]\n")
+}
+
+// GetNetworkFromFile reads a file and returns a slice with the network nodes defined within.
+func GetNetworkFromFile(fileName string) []*NetworkNode {
+	fileData, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		panic(err)
+	}
+	fileString := string(fileData)
+
+	//Replace Windows newline if needed
+	fileString = strings.Replace(fileString, "\r\n", "\n", -1)
+
+	//Each line has an ip followed by a port
+	fileLines := strings.Split(fileString, "\n")
+
+	networkSlice := make([]*NetworkNode, 0)
+
+	for _, line := range fileLines {
+		ipAndPort := strings.Split(line, ":")
+		node := &NetworkNode{
+			IP:   ipAndPort[0],
+			Port: ":" + ipAndPort[1]}
+		networkSlice = append(networkSlice, node)
+	}
+
+	return networkSlice
 }

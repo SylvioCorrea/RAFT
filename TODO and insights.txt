@@ -54,3 +54,7 @@ Algumas RPCs devem parar o timer, outras não.
             state.mux.Unlock()
         }
     }
+    
+
+
+PROBLEMA: um servidor S sofre crash e retorna. Como a implementação está agora, S irá estabelecer conexões de cliente RPC com os demais, mas as conexões de cliente RPC dos demais para S foram cortadas durante o crash. Em razão disso, S pode fazer chamadas RPC para os demais e receber respostas, mas os demais não podem fazer chamadas RPC para S.
